@@ -7,7 +7,7 @@ The repository is intentionally small enough to study and modify, while still us
 ## Features
 
 - Byte-level BPE tokenizer training.
-- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, and top-k/top-p sampling.
+- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, and top-k/top-p sampling.
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - JSON/TOML run configs with strict validation and fail-fast errors.
@@ -109,6 +109,8 @@ Useful runtime flags in `train`:
 - `allow_tf32`: enables CUDA TF32 matmul and cuDNN kernels when available.
 - `gradient_checkpointing`: recomputes transformer blocks during backward to reduce activation memory.
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
+
+Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path.
 
 ## Training Objectives
 

@@ -10,12 +10,15 @@ from torch.utils.checkpoint import checkpoint
 
 from anila.config import ModelConfig
 
+KVCache = tuple[tuple[torch.Tensor, torch.Tensor], ...]
+
 
 @dataclass
 class CausalLMOutput:
     logits: torch.Tensor
     loss: torch.Tensor | None = None
     hidden_states: torch.Tensor | None = None
+    past_key_values: KVCache | None = None
 
 
 class RMSNorm(nn.Module):
@@ -45,9 +48,9 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-right, left), dim=-1)
 
 
-def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    cos = cos[: x.size(-2)].to(device=x.device, dtype=x.dtype)
-    sin = sin[: x.size(-2)].to(device=x.device, dtype=x.dtype)
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, *, offset: int = 0) -> torch.Tensor:
+    cos = cos[offset : offset + x.size(-2)].to(device=x.device, dtype=x.dtype)
+    sin = sin[offset : offset + x.size(-2)].to(device=x.device, dtype=x.dtype)
     return (x * cos[None, None, :, :]) + (rotate_half(x) * sin[None, None, :, :])
 
 
@@ -75,23 +78,48 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.dropout
         self.resid_dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        *,
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         batch, seq_len, embd = x.shape
         q = self.q_proj(x).view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch, seq_len, self.n_kv_head, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, seq_len, self.n_kv_head, self.head_dim).transpose(1, 2)
-        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        past_len = 0 if past_key_value is None else past_key_value[0].size(-2)
+        q, k = apply_rope(q, cos, sin, offset=past_len), apply_rope(k, cos, sin, offset=past_len)
+        if past_key_value is not None:
+            past_k, past_v = past_key_value
+            k = torch.cat((past_k, k), dim=-2)
+            v = torch.cat((past_v, v), dim=-2)
+        present = (k, v) if use_cache else None
         k, v = repeat_kv(k, self.kv_repeat), repeat_kv(v, self.kv_repeat)
+        attn_mask = None
+        is_causal = past_key_value is None
+        if past_key_value is not None and seq_len > 1:
+            total_len = k.size(-2)
+            query_positions = torch.arange(past_len, past_len + seq_len, device=x.device)
+            key_positions = torch.arange(total_len, device=x.device)
+            allowed = key_positions[None, :] <= query_positions[:, None]
+            attn_mask = torch.zeros((seq_len, total_len), dtype=q.dtype, device=x.device).masked_fill(
+                ~allowed,
+                float("-inf"),
+            )
         y = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            attn_mask=None,
+            attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True,
+            is_causal=is_causal,
         )
         y = y.transpose(1, 2).contiguous().view(batch, seq_len, embd)
-        return self.resid_dropout(self.o_proj(y))
+        return self.resid_dropout(self.o_proj(y)), present
 
 
 class SwiGLU(nn.Module):
@@ -115,9 +143,24 @@ class Block(nn.Module):
         self.mlp_norm = RMSNorm(config.n_embd)
         self.mlp = SwiGLU(config)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.attn_norm(x), cos, sin)
-        return x + self.mlp(self.mlp_norm(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        *,
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+        attn_out, present = self.attn(
+            self.attn_norm(x),
+            cos,
+            sin,
+            past_key_value=past_key_value,
+            use_cache=use_cache,
+        )
+        x = x + attn_out
+        return x + self.mlp(self.mlp_norm(x)), present
 
 
 class AnilaLM(nn.Module):
@@ -151,25 +194,57 @@ class AnilaLM(nn.Module):
         targets: torch.Tensor | None = None,
         *,
         return_hidden_states: bool = False,
+        past_key_values: KVCache | None = None,
+        use_cache: bool = False,
     ) -> CausalLMOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, seq]")
-        if input_ids.size(1) > self.config.context_length:
+        if past_key_values is not None and len(past_key_values) != len(self.blocks):
+            raise ValueError("past_key_values must contain one entry per transformer block")
+        past_len = 0 if past_key_values is None else past_key_values[0][0].size(-2)
+        if input_ids.size(1) + past_len > self.config.context_length:
             raise ValueError(
-                f"sequence length {input_ids.size(1)} exceeds context_length={self.config.context_length}"
+                f"sequence length {input_ids.size(1) + past_len} exceeds context_length={self.config.context_length}"
             )
+        if targets is not None and past_key_values is not None:
+            raise ValueError("targets cannot be used with past_key_values")
         x = self.drop(self.embed(input_ids))
-        for block in self.blocks:
-            if self.gradient_checkpointing and self.training:
-                x = checkpoint(block, x, self.rope_cos, self.rope_sin, use_reentrant=False)
+        next_past_key_values = [] if use_cache else None
+        for block_index, block in enumerate(self.blocks):
+            past_key_value = None if past_key_values is None else past_key_values[block_index]
+            if self.gradient_checkpointing and self.training and not use_cache and past_key_values is None:
+                x = checkpoint(
+                    lambda hidden, cos, sin, block=block: block(hidden, cos, sin)[0],
+                    x,
+                    self.rope_cos,
+                    self.rope_sin,
+                    use_reentrant=False,
+                    preserve_rng_state=True,
+                )
+                present = None
             else:
-                x = block(x, self.rope_cos, self.rope_sin)
+                x, present = block(
+                    x,
+                    self.rope_cos,
+                    self.rope_sin,
+                    past_key_value=past_key_value,
+                    use_cache=use_cache,
+                )
+            if next_past_key_values is not None:
+                if present is None:
+                    raise RuntimeError("block did not return cache")
+                next_past_key_values.append(present)
         hidden_states = self.norm(x)
         logits = self.lm_head(hidden_states)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
-        return CausalLMOutput(logits=logits, loss=loss, hidden_states=hidden_states if return_hidden_states else None)
+        return CausalLMOutput(
+            logits=logits,
+            loss=loss,
+            hidden_states=hidden_states if return_hidden_states else None,
+            past_key_values=tuple(next_past_key_values) if next_past_key_values is not None else None,
+        )
 
     def set_gradient_checkpointing(self, enabled: bool) -> None:
         self.gradient_checkpointing = enabled
@@ -184,6 +259,7 @@ class AnilaLM(nn.Module):
         top_k: int | None = 50,
         top_p: float = 1.0,
         eos_id: int | None = None,
+        use_cache: bool = True,
     ) -> torch.Tensor:
         if max_new_tokens < 0:
             raise ValueError("max_new_tokens cannot be negative")
@@ -191,9 +267,16 @@ class AnilaLM(nn.Module):
             raise ValueError("temperature must be positive")
         if not 0.0 < top_p <= 1.0:
             raise ValueError("top_p must be in (0, 1]")
+        past_key_values = None
         for _ in range(max_new_tokens):
-            idx_cond = input_ids[:, -self.config.context_length :]
-            logits = self(idx_cond).logits[:, -1, :] / temperature
+            if use_cache and past_key_values is not None and past_key_values[0][0].size(-2) < self.config.context_length:
+                idx_cond = input_ids[:, -1:]
+            else:
+                past_key_values = None
+                idx_cond = input_ids[:, -self.config.context_length :]
+            out = self(idx_cond, past_key_values=past_key_values, use_cache=use_cache)
+            past_key_values = out.past_key_values
+            logits = out.logits[:, -1, :] / temperature
             logits = filter_logits(logits, top_k=top_k, top_p=top_p)
             probs = F.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)

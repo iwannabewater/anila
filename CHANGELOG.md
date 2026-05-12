@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.1 - 2026-05-12
+
+Incremental inference release.
+
+- Added native KV-cache generation to `AnilaLM.generate`, enabled by default.
+- Added cached continuation support to `AnilaLM.forward` through `past_key_values` and `use_cache`.
+- Added tests that compare cached continuation logits against the plain full forward path.
+- Documented the inference cache contract and updated project status notes.
+
 ## v0.1.0 - 2026-05-12
 
 Initial full-flow training release.

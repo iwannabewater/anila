@@ -64,6 +64,12 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 - `gradient_checkpointing`: enables transformer block activation recomputation during backward.
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW outside CUDA.
 
+## Inference Path
+
+`AnilaLM.generate` enables `use_cache=True` by default. The first sampling step pre-fills the cache with the active context window, later steps feed only the newest token, and the cache is rebuilt from the most recent context window when it would exceed `model.context_length`.
+
+The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment.
+
 ## Checkpoint Contract
 
 Training checkpoints are ordinary `torch.save` dictionaries:
