@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from anila.config import ModelConfig
 
@@ -126,6 +127,7 @@ class AnilaLM(nn.Module):
         self.embed = nn.Embedding(self.config.vocab_size, self.config.n_embd)
         self.drop = nn.Dropout(self.config.dropout)
         self.blocks = nn.ModuleList([Block(self.config) for _ in range(self.config.n_layer)])
+        self.gradient_checkpointing = False
         self.norm = RMSNorm(self.config.n_embd)
         self.lm_head = nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
         if self.config.tie_embeddings:
@@ -158,13 +160,19 @@ class AnilaLM(nn.Module):
             )
         x = self.drop(self.embed(input_ids))
         for block in self.blocks:
-            x = block(x, self.rope_cos, self.rope_sin)
+            if self.gradient_checkpointing and self.training:
+                x = checkpoint(block, x, self.rope_cos, self.rope_sin, use_reentrant=False)
+            else:
+                x = block(x, self.rope_cos, self.rope_sin)
         hidden_states = self.norm(x)
         logits = self.lm_head(hidden_states)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
         return CausalLMOutput(logits=logits, loss=loss, hidden_states=hidden_states if return_hidden_states else None)
+
+    def set_gradient_checkpointing(self, enabled: bool) -> None:
+        self.gradient_checkpointing = enabled
 
     @torch.inference_mode()
     def generate(

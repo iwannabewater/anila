@@ -76,6 +76,9 @@ class TrainConfig:
     device: str = "auto"
     dtype: str = "auto"
     compile: bool = False
+    allow_tf32: bool = True
+    gradient_checkpointing: bool = False
+    fused_adamw: bool = False
     resume: str | None = None
 
     def validated(self) -> TrainConfig:
@@ -110,6 +113,9 @@ class TrainConfig:
             raise ValueError("train.eval_batches must be positive")
         if self.dtype not in {"auto", "float32", "float16", "bfloat16"}:
             raise ValueError("train.dtype must be auto, float32, float16, or bfloat16")
+        for name in ("compile", "allow_tf32", "gradient_checkpointing", "fused_adamw"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"train.{name} must be a boolean")
         return self
 
 

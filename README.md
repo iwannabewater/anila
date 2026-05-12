@@ -8,7 +8,7 @@ The repository is intentionally small enough to study and modify, while still us
 
 - Byte-level BPE tokenizer training.
 - GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, and top-k/top-p sampling.
-- Single-process trainer with gradient accumulation, mixed precision, cosine decay, validation, checkpointing, resume, and atomic saves.
+- Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - JSON/TOML run configs with strict validation and fail-fast errors.
 - CLI commands for tokenizer training, model training, checkpoint inspection, and sampling.
@@ -103,6 +103,12 @@ Run configs live under `configs/` and contain these top-level sections:
 - `sft`: supervised fine-tuning record formatting settings.
 
 See `configs/smoke.json` for pretraining, `configs/sft_smoke.json` for full-model supervised fine-tuning, `configs/lora_sft_smoke.json` for LoRA SFT, `configs/distill_hard_sft_smoke.json` for hard distillation, `configs/distill_soft_smoke.json` for soft-logit distillation, `configs/dpo_smoke.json` for DPO, `configs/reward_model_smoke.json` for reward model training, `configs/grpo_smoke.json` and `configs/ppo_smoke.json` for rule-reward RL, and `configs/grpo_learned_reward_smoke.json` plus `configs/ppo_learned_reward_smoke.json` for learned-reward RL.
+
+Useful runtime flags in `train`:
+
+- `allow_tf32`: enables CUDA TF32 matmul and cuDNN kernels when available.
+- `gradient_checkpointing`: recomputes transformer blocks during backward to reduce activation memory.
+- `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
 
 ## Training Objectives
 
@@ -271,6 +277,8 @@ PPO expects a policy initialized from a checkpoint and a frozen reference model.
 
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
+- [Project Status](docs/status.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 

@@ -17,3 +17,18 @@ def test_model_forward_and_generate() -> None:
 
     generated = model.generate(x[:, :4], max_new_tokens=3, top_k=10)
     assert generated.shape == (2, 7)
+
+
+def test_model_supports_gradient_checkpointing_backward() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    model = AnilaLM(cfg)
+    model.set_gradient_checkpointing(True)
+    model.train()
+    x = torch.randint(0, cfg.vocab_size, (2, 8))
+
+    out = model(x, targets=x)
+    assert out.loss is not None
+    out.loss.backward()
+
+    assert model.gradient_checkpointing is True
+    assert model.embed.weight.grad is not None

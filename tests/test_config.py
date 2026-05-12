@@ -68,6 +68,9 @@ def test_load_sft_run_config(tmp_path: Path) -> None:
     assert cfg.ppo.max_new_tokens == 8
     assert cfg.reward.scorer == "rule"
     assert cfg.reward.scale == 1.5
+    assert cfg.train.allow_tf32 is True
+    assert cfg.train.gradient_checkpointing is False
+    assert cfg.train.fused_adamw is False
     assert cfg.sft.format == "auto"
 
 
@@ -94,3 +97,22 @@ def test_soft_distill_config_requires_teacher(tmp_path: Path) -> None:
 def test_reward_model_scorer_requires_checkpoint() -> None:
     with pytest.raises(ValueError, match="reward.checkpoint"):
         RewardConfig(scorer="model").validated()
+
+
+def test_train_runtime_flags_must_be_booleans(tmp_path: Path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        """
+        {
+          "train": {
+            "dataset_path": "train.txt",
+            "tokenizer_path": "tokenizer",
+            "gradient_checkpointing": "yes"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="gradient_checkpointing"):
+        load_run_config(path)

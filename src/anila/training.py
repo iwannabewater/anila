@@ -7,6 +7,7 @@ import random
 import time
 from collections.abc import Iterator
 from dataclasses import asdict, replace
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +71,7 @@ def cosine_lr(step: int, cfg: TrainConfig) -> float:
     return cfg.learning_rate * (cfg.min_lr_ratio + (1.0 - cfg.min_lr_ratio) * cosine)
 
 
-def configure_optimizer(model: torch.nn.Module, cfg: TrainConfig) -> torch.optim.Optimizer:
+def configure_optimizer(model: torch.nn.Module, cfg: TrainConfig, device: torch.device | None = None) -> torch.optim.Optimizer:
     decay, no_decay = [], []
     for _, param in model.named_parameters():
         if not param.requires_grad:
@@ -81,13 +82,18 @@ def configure_optimizer(model: torch.nn.Module, cfg: TrainConfig) -> torch.optim
             no_decay.append(param)
     if not decay and not no_decay:
         raise ValueError("No trainable parameters found for optimizer")
+    optimizer_kwargs: dict[str, Any] = {
+        "lr": cfg.learning_rate,
+        "betas": (cfg.beta1, cfg.beta2),
+    }
+    if cfg.fused_adamw and device is not None and device.type == "cuda" and "fused" in signature(torch.optim.AdamW).parameters:
+        optimizer_kwargs["fused"] = True
     return torch.optim.AdamW(
         [
             {"params": decay, "weight_decay": cfg.weight_decay},
             {"params": no_decay, "weight_decay": 0.0},
         ],
-        lr=cfg.learning_rate,
-        betas=(cfg.beta1, cfg.beta2),
+        **optimizer_kwargs,
     )
 
 
@@ -97,6 +103,13 @@ def format_parameter_count(count: int) -> str:
     if count >= 1_000:
         return f"{count / 1_000:.2f}K"
     return str(count)
+
+
+def configure_torch_runtime(cfg: TrainConfig, device: torch.device) -> None:
+    if device.type != "cuda":
+        return
+    torch.backends.cuda.matmul.allow_tf32 = cfg.allow_tf32
+    torch.backends.cudnn.allow_tf32 = cfg.allow_tf32
 
 
 def cycle(loader) -> Iterator[tuple[Any, ...]]:
@@ -168,6 +181,7 @@ class Trainer:
         self.train_cfg = config.train
         self.device = resolve_device(self.train_cfg.device)
         self.dtype = resolve_dtype(self.train_cfg.dtype, self.device)
+        configure_torch_runtime(self.train_cfg, self.device)
         set_seed(self.train_cfg.seed)
 
         self.tokenizer = AnilaTokenizer.load(self.train_cfg.tokenizer_path)
@@ -181,6 +195,7 @@ class Trainer:
                 train_base=self.config.lora.train_base,
                 train_bias=self.config.lora.train_bias,
             )
+        self.model.set_gradient_checkpointing(self.train_cfg.gradient_checkpointing)
         initial_payload = None
         if self.train_cfg.init_from:
             initial_payload = self._load_initial_weights(self.train_cfg.init_from)
@@ -226,7 +241,7 @@ class Trainer:
         if self.train_cfg.compile:
             self.model = torch.compile(self.model)
 
-        self.optimizer = configure_optimizer(self.model, self.train_cfg)
+        self.optimizer = configure_optimizer(self.model, self.train_cfg, self.device)
         self.recorder = RunRecorder(self.train_cfg.out_dir)
         self.recorder.write_config(self.config)
         self.checkpoints = CheckpointManager(self.train_cfg.out_dir)
@@ -277,7 +292,8 @@ class Trainer:
         console.print(
             f"[bold]Anila[/bold] training on {self.device} with dtype={self.dtype}, "
             f"params={format_parameter_count(sum(param.numel() for param in runtime_model.parameters()))}, "
-            f"trainable={format_parameter_count(trainable_parameter_count(runtime_model))}"
+            f"trainable={format_parameter_count(trainable_parameter_count(runtime_model))}, "
+            f"grad_ckpt={self.train_cfg.gradient_checkpointing}"
         )
         iterator = cycle(self.train_loader)
         start_time = time.time()

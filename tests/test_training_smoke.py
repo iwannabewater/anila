@@ -17,7 +17,7 @@ from anila.config import (
 )
 from anila.sampling import sample_text
 from anila.tokenization import train_byte_bpe
-from anila.training import Trainer
+from anila.training import Trainer, configure_optimizer
 
 
 def test_tiny_training_smoke(tmp_path: Path) -> None:
@@ -55,6 +55,18 @@ def test_tiny_training_smoke(tmp_path: Path) -> None:
     assert payload["objective"] == "pretrain"
     assert json.loads(config_snapshot.read_text(encoding="utf-8"))["train"]["objective"] == "pretrain"
     assert {"train", "eval", "checkpoint"}.issubset(metric_events)
+
+
+def test_configure_optimizer_accepts_fused_flag_on_cpu() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=8, n_layer=1, n_head=2, n_kv_head=1, n_embd=32).validated()
+    model = torch.nn.Linear(cfg.n_embd, cfg.vocab_size)
+    optimizer = configure_optimizer(
+        model,
+        TrainConfig(dataset_path="data.txt", tokenizer_path="tokenizer", fused_adamw=True),
+        torch.device("cpu"),
+    )
+
+    assert isinstance(optimizer, torch.optim.AdamW)
 
 
 def test_tiny_sft_training_smoke(tmp_path: Path) -> None:

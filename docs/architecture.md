@@ -39,9 +39,9 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `grpo`: computes group-relative advantages and clipped GRPO loss with reference KL.
 - `ppo`: adds a value head wrapper, token-level rollout accounting, GAE, and clipped PPO policy/value loss.
 - `reward`: trains scalar reward models, loads learned reward scorer checkpoints, and keeps rule rewards behind the same scorer contract.
-- `model`: implements the causal language model and generation-time filtering.
+- `model`: implements the causal language model, optional activation checkpointing, and generation-time filtering.
 - `peft`: injects LoRA adapters into target linear modules, freezes non-adapter parameters, and extracts adapter state.
-- `training`: owns objective selection, device/dtype selection, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
+- `training`: owns objective selection, device/dtype selection, TF32 runtime setup, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
 - `checkpoint`: exposes lightweight checkpoint inspection for CLI and tests.
 - `sampling`: restores checkpoints and exposes text generation.
 
@@ -52,6 +52,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `latest.pt` and step checkpoints are written through a temporary file and atomically replaced.
 - `config.json` captures the validated run config and `metrics.jsonl` records train, eval, and checkpoint events under `train.out_dir`.
 - Tokenizer vocabulary size is loaded from the tokenizer artifact and becomes the model vocabulary at runtime.
+- `allow_tf32`, `gradient_checkpointing`, and `fused_adamw` are explicit train config flags so stability/performance behavior is visible in saved configs.
 - `pretrain` consumes plain text and trains all next-token targets.
 - `sft` consumes JSONL records and sets non-assistant labels to `-100`, so prompt/user/system tokens do not contribute to loss.
 - `distill` can run hard-label distillation over pretraining or SFT data, or soft-logit distillation against a teacher checkpoint.

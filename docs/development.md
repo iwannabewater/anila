@@ -56,6 +56,14 @@ uv run anila inspect-checkpoint \
 
 Each run writes `config.json` and `metrics.jsonl` under `train.out_dir`. These files are generated run artifacts, so they remain ignored with the rest of `runs/`.
 
+## Runtime Flags
+
+The trainer keeps performance-oriented behavior explicit in `train` config:
+
+- `allow_tf32`: toggles CUDA TF32 matmul/cuDNN usage.
+- `gradient_checkpointing`: enables transformer block activation recomputation during backward.
+- `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW outside CUDA.
+
 ## Checkpoint Contract
 
 Training checkpoints are ordinary `torch.save` dictionaries:
