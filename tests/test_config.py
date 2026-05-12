@@ -116,3 +116,22 @@ def test_train_runtime_flags_must_be_booleans(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="gradient_checkpointing"):
         load_run_config(path)
+
+
+def test_train_optimizer_betas_must_be_valid(tmp_path: Path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        """
+        {
+          "train": {
+            "dataset_path": "train.txt",
+            "tokenizer_path": "tokenizer",
+            "beta2": 1.0
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="train.beta2"):
+        load_run_config(path)

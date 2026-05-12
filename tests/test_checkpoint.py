@@ -4,9 +4,11 @@ from pathlib import Path
 import torch
 from typer.testing import CliRunner
 
-from anila.checkpoint import inspect_checkpoint
+from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.cli import app
-from anila.config import ModelConfig, TrainConfig
+from anila.config import LoRAConfig, ModelConfig, TrainConfig
+from anila.model import AnilaLM
+from anila.peft import LoRALinear, apply_lora
 
 
 def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
@@ -60,3 +62,81 @@ def test_inspect_checkpoint_cli_prints_json(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert '"objective": "pretrain"' in result.output
+
+    grouped = CliRunner().invoke(app, ["checkpoint", "inspect", "--checkpoint", str(checkpoint)])
+    assert grouped.exit_code == 0
+    assert '"objective": "pretrain"' in grouped.output
+
+
+def test_merge_lora_checkpoint_exports_plain_model(tmp_path: Path) -> None:
+    torch.manual_seed(0)
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    lora_cfg = LoRAConfig(enabled=True, rank=2, alpha=4.0, target_modules=["q_proj", "v_proj"])
+    model = AnilaLM(cfg)
+    targets = apply_lora(model, lora_cfg)
+    model.eval()
+    for module in model.modules():
+        if isinstance(module, LoRALinear):
+            with torch.no_grad():
+                module.lora_b.weight.fill_(0.01)
+    input_ids = torch.randint(0, cfg.vocab_size, (2, 6))
+    expected = model(input_ids).logits.detach()
+
+    checkpoint = tmp_path / "lora.pt"
+    torch.save(
+        {
+            "schema_version": 1,
+            "objective": "sft",
+            "model": model.state_dict(),
+            "model_config": asdict(cfg),
+            "train_config": asdict(TrainConfig(dataset_path="data.jsonl", tokenizer_path="tokenizer", objective="sft")),
+            "tokenizer_path": "tokenizer",
+            "lora_config": asdict(lora_cfg),
+            "lora_targets": targets,
+            "adapter_checkpoint": None,
+            "step": 1,
+        },
+        checkpoint,
+    )
+
+    out = merge_lora_checkpoint(checkpoint, tmp_path / "merged.pt")
+    payload = torch.load(out, map_location="cpu")
+    merged = AnilaLM(cfg)
+    merged.load_state_dict(payload["model"])
+    merged.eval()
+
+    assert payload["lora_config"]["enabled"] is False
+    assert payload["merged_lora_targets"] == targets
+    assert not any(".lora_" in key or ".base." in key for key in payload["model"])
+    assert inspect_checkpoint(out)["is_merged_lora"] is True
+    torch.testing.assert_close(merged(input_ids).logits, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_merge_lora_checkpoint_cli(tmp_path: Path) -> None:
+    cfg = ModelConfig(vocab_size=32, context_length=8, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    lora_cfg = LoRAConfig(enabled=True, rank=2, target_modules=["q_proj"])
+    model = AnilaLM(cfg)
+    targets = apply_lora(model, lora_cfg)
+    checkpoint = tmp_path / "lora.pt"
+    torch.save(
+        {
+            "schema_version": 1,
+            "objective": "sft",
+            "model": model.state_dict(),
+            "model_config": asdict(cfg),
+            "train_config": asdict(TrainConfig(dataset_path="data.jsonl", tokenizer_path="tokenizer", objective="sft")),
+            "tokenizer_path": "tokenizer",
+            "lora_config": asdict(lora_cfg),
+            "lora_targets": targets,
+            "adapter_checkpoint": None,
+            "step": 1,
+        },
+        checkpoint,
+    )
+
+    out = tmp_path / "merged.pt"
+    result = CliRunner().invoke(app, ["checkpoint", "merge-lora", "--checkpoint", str(checkpoint), "--out", str(out)])
+
+    assert result.exit_code == 0
+    assert out.exists()
+    assert "saved merged checkpoint" in result.output

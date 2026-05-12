@@ -6,16 +6,24 @@ from typing import Annotated
 
 import typer
 
-from anila.checkpoint import inspect_checkpoint
+from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
 from anila.sampling import sample_text
 from anila.tokenization import train_byte_bpe
 from anila.training import train
 
 app = typer.Typer(help="Anila: from-scratch language-model training.")
+tokenizer_app = typer.Typer(help="Tokenizer commands.")
+model_app = typer.Typer(help="Model training and generation commands.")
+checkpoint_app = typer.Typer(help="Checkpoint inspection and export commands.")
+
+app.add_typer(tokenizer_app, name="tokenizer")
+app.add_typer(model_app, name="model")
+app.add_typer(checkpoint_app, name="checkpoint")
 
 
-@app.command("train-tokenizer")
+@tokenizer_app.command("train")
+@app.command("train-tokenizer", hidden=True)
 def train_tokenizer(
     input: Annotated[list[Path], typer.Option("--input", "-i", exists=True, readable=True)],
     out: Annotated[Path, typer.Option("--out", "-o")],
@@ -27,7 +35,8 @@ def train_tokenizer(
     typer.echo(f"saved tokenizer to {out} ({tokenizer.vocab_size} tokens)")
 
 
-@app.command("train")
+@model_app.command("train")
+@app.command("train", hidden=True)
 def train_model(
     config: Annotated[Path, typer.Option("--config", "-c", exists=True, readable=True)],
 ) -> None:
@@ -35,7 +44,8 @@ def train_model(
     train(load_run_config(config))
 
 
-@app.command()
+@model_app.command("generate")
+@app.command(hidden=True)
 def sample(
     checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
     tokenizer: Annotated[Path, typer.Option("--tokenizer", "-t", exists=True, readable=True)],
@@ -60,12 +70,24 @@ def sample(
     typer.echo(text)
 
 
-@app.command("inspect-checkpoint")
+@checkpoint_app.command("inspect")
+@app.command("inspect-checkpoint", hidden=True)
 def inspect_checkpoint_command(
     checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
 ) -> None:
     """Print a JSON summary of a native Anila checkpoint."""
     typer.echo(json.dumps(inspect_checkpoint(checkpoint), indent=2, sort_keys=True))
+
+
+@checkpoint_app.command("merge-lora")
+@app.command("merge-lora-checkpoint", hidden=True)
+def merge_lora_checkpoint_command(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
+    out: Annotated[Path, typer.Option("--out", "-o")],
+) -> None:
+    """Export a LoRA checkpoint as a merged full-model checkpoint."""
+    path = merge_lora_checkpoint(checkpoint, out)
+    typer.echo(f"saved merged checkpoint to {path}")
 
 
 if __name__ == "__main__":

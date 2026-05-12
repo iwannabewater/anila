@@ -64,6 +64,37 @@ def lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     }
 
 
+def merge_lora(model: nn.Module) -> list[str]:
+    merged: list[str] = []
+    for module_name, module in list(model.named_modules()):
+        for child_name, child in list(module.named_children()):
+            if not isinstance(child, LoRALinear):
+                continue
+            setattr(module, child_name, _merged_linear(child))
+            full_name = f"{module_name}.{child_name}" if module_name else child_name
+            merged.append(full_name)
+    if not merged:
+        raise ValueError("No LoRA modules were found to merge")
+    return merged
+
+
+def _merged_linear(layer: LoRALinear) -> nn.Linear:
+    base = layer.base
+    merged = nn.Linear(
+        base.in_features,
+        base.out_features,
+        bias=base.bias is not None,
+        device=base.weight.device,
+        dtype=base.weight.dtype,
+    )
+    delta = layer.lora_b.weight @ layer.lora_a.weight
+    with torch.no_grad():
+        merged.weight.copy_(base.weight + delta.mul(layer.scaling).to(dtype=base.weight.dtype))
+        if base.bias is not None and merged.bias is not None:
+            merged.bias.copy_(base.bias)
+    return merged
+
+
 def trainable_parameter_names(model: nn.Module) -> list[str]:
     return [name for name, param in model.named_parameters() if param.requires_grad]
 

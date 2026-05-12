@@ -1,4 +1,4 @@
-from anila.checkpoint import inspect_checkpoint
+from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import (
     DistillConfig,
     DPOConfig,
@@ -30,4 +30,5 @@ __all__ = [
     "TrainConfig",
     "inspect_checkpoint",
     "load_run_config",
+    "merge_lora_checkpoint",
 ]

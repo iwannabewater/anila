@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.2 - 2026-05-12
+
+Artifact and CLI maturity release.
+
+- Added LoRA checkpoint merge/export so adapter weights can be folded into a plain native full-model checkpoint.
+- Added canonical grouped CLI commands under `tokenizer`, `model`, and `checkpoint`, while retaining the previous flat commands as aliases.
+- Renamed smoke configs to hyphen-case for consistency with run output directories.
+- Tightened train config validation for AdamW betas, worker counts, device strings, and output directories.
+- Reworked README quick start commands with purpose comments and updated release/status documentation.
+
 ## v0.1.1 - 2026-05-12
 
 Incremental inference release.

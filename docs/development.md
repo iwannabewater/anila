@@ -24,33 +24,44 @@ uv run pytest
 Run the end-to-end smoke path before larger changes:
 
 ```bash
-uv run anila train-tokenizer \
+# Train the tiny tokenizer used by all smoke configs.
+uv run anila tokenizer train \
   --input examples/tiny_corpus.txt \
   --input examples/tiny_sft.jsonl \
   --out runs/tokenizer \
   --vocab-size 512 \
   --min-frequency 1
 
-uv run anila train --config configs/smoke.json
+# Build the base pretraining checkpoint.
+uv run anila model train --config configs/smoke.json
 
-uv run anila train --config configs/sft_smoke.json
+# Build SFT and LoRA checkpoints from the base path.
+uv run anila model train --config configs/sft-smoke.json
+uv run anila model train --config configs/lora-sft-smoke.json
 
-uv run anila train --config configs/lora_sft_smoke.json
-uv run anila train --config configs/distill_hard_sft_smoke.json
-uv run anila train --config configs/distill_soft_smoke.json
-uv run anila train --config configs/dpo_smoke.json
-uv run anila train --config configs/reward_model_smoke.json
-uv run anila train --config configs/grpo_smoke.json
-uv run anila train --config configs/ppo_smoke.json
-uv run anila train --config configs/grpo_learned_reward_smoke.json
-uv run anila train --config configs/ppo_learned_reward_smoke.json
+# Exercise distillation, preference, reward, and online RL objectives.
+uv run anila model train --config configs/distill-hard-sft-smoke.json
+uv run anila model train --config configs/distill-soft-smoke.json
+uv run anila model train --config configs/dpo-smoke.json
+uv run anila model train --config configs/reward-model-smoke.json
+uv run anila model train --config configs/grpo-smoke.json
+uv run anila model train --config configs/ppo-smoke.json
+uv run anila model train --config configs/grpo-learned-reward-smoke.json
+uv run anila model train --config configs/ppo-learned-reward-smoke.json
 
-uv run anila sample \
+# Fold LoRA adapter weights into a plain native checkpoint.
+uv run anila checkpoint merge-lora \
+  --checkpoint runs/lora-sft-smoke/checkpoints/latest.pt \
+  --out runs/lora-sft-smoke/checkpoints/merged.pt
+
+# Generate a quick continuation from the PPO checkpoint.
+uv run anila model generate \
   --checkpoint runs/ppo-smoke/checkpoints/latest.pt \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
 
-uv run anila inspect-checkpoint \
+# Inspect checkpoint metadata as JSON.
+uv run anila checkpoint inspect \
   --checkpoint runs/ppo-smoke/checkpoints/latest.pt
 ```
 
@@ -93,10 +104,14 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `tokenizer_path`: tokenizer artifact path used by the run.
 - `step`: completed optimizer step.
 - `optimizer`: optimizer state dict.
+- `merged_lora_targets`: projection modules folded into base weights by `checkpoint merge-lora`, present only on merged exports.
+- `merged_from_checkpoint`: source checkpoint path for merged LoRA exports, present only on merged exports.
 
 `latest.pt` is written atomically and is safe to use for resume or sampling after a completed save.
 
 When LoRA is enabled, adapter-only checkpoints are also written under `checkpoints/adapters/`.
+
+Merged LoRA exports add `merged_lora_targets` and `merged_from_checkpoint`, reset `lora_config.enabled` to false, clear `adapter_checkpoint`, and store ordinary base model keys under `model`.
 
 ## Release Hygiene
 

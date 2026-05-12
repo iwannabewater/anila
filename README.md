@@ -11,7 +11,7 @@ The repository is intentionally small enough to study and modify, while still us
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - JSON/TOML run configs with strict validation and fail-fast errors.
-- CLI commands for tokenizer training, model training, checkpoint inspection, and sampling.
+- Grouped CLI commands for tokenizer training, model training, generation, checkpoint inspection, and LoRA checkpoint merge/export.
 - Fast unit tests plus an end-to-end smoke test.
 
 ## Requirements
@@ -23,40 +23,57 @@ The repository is intentionally small enough to study and modify, while still us
 ## Quick Start
 
 ```bash
+# Install the package, runtime dependencies, and development tools.
 uv sync --group dev
 
-uv run anila train-tokenizer \
+# Train a byte-level BPE tokenizer from the tiny local examples.
+uv run anila tokenizer train \
   --input examples/tiny_corpus.txt \
   --input examples/tiny_sft.jsonl \
   --out runs/tokenizer \
   --vocab-size 512 \
   --min-frequency 1
 
-uv run anila train --config configs/smoke.json
+# Run plain next-token pretraining.
+uv run anila model train --config configs/smoke.json
 
-uv run anila train --config configs/sft_smoke.json
+# Run response-masked supervised fine-tuning.
+uv run anila model train --config configs/sft-smoke.json
 
-uv run anila train --config configs/lora_sft_smoke.json
+# Fine-tune LoRA adapters from the pretraining checkpoint.
+uv run anila model train --config configs/lora-sft-smoke.json
 
-uv run anila train --config configs/distill_hard_sft_smoke.json
-uv run anila train --config configs/distill_soft_smoke.json
-uv run anila train --config configs/dpo_smoke.json
-uv run anila train --config configs/reward_model_smoke.json
-uv run anila train --config configs/grpo_smoke.json
-uv run anila train --config configs/ppo_smoke.json
-uv run anila train --config configs/grpo_learned_reward_smoke.json
-uv run anila train --config configs/ppo_learned_reward_smoke.json
+# Train hard-label and soft-logit distillation runs.
+uv run anila model train --config configs/distill-hard-sft-smoke.json
+uv run anila model train --config configs/distill-soft-smoke.json
 
-uv run anila sample \
+# Train preference, reward-model, and online RL smoke runs.
+uv run anila model train --config configs/dpo-smoke.json
+uv run anila model train --config configs/reward-model-smoke.json
+uv run anila model train --config configs/grpo-smoke.json
+uv run anila model train --config configs/ppo-smoke.json
+uv run anila model train --config configs/grpo-learned-reward-smoke.json
+uv run anila model train --config configs/ppo-learned-reward-smoke.json
+
+# Export a LoRA checkpoint as a merged full-model checkpoint for plain inference.
+uv run anila checkpoint merge-lora \
+  --checkpoint runs/lora-sft-smoke/checkpoints/latest.pt \
+  --out runs/lora-sft-smoke/checkpoints/merged.pt
+
+# Generate text from a checkpoint.
+uv run anila model generate \
   --checkpoint runs/ppo-smoke/checkpoints/latest.pt \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
 
-uv run anila inspect-checkpoint \
+# Print a JSON checkpoint summary.
+uv run anila checkpoint inspect \
   --checkpoint runs/ppo-smoke/checkpoints/latest.pt
 ```
 
 The smoke config writes checkpoints under `runs/smoke/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
+
+The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
 
 ## Quality Checks
 
@@ -102,7 +119,7 @@ Run configs live under `configs/` and contain these top-level sections:
 - `reward`: optional reward scorer and reward-model data settings.
 - `sft`: supervised fine-tuning record formatting settings.
 
-See `configs/smoke.json` for pretraining, `configs/sft_smoke.json` for full-model supervised fine-tuning, `configs/lora_sft_smoke.json` for LoRA SFT, `configs/distill_hard_sft_smoke.json` for hard distillation, `configs/distill_soft_smoke.json` for soft-logit distillation, `configs/dpo_smoke.json` for DPO, `configs/reward_model_smoke.json` for reward model training, `configs/grpo_smoke.json` and `configs/ppo_smoke.json` for rule-reward RL, and `configs/grpo_learned_reward_smoke.json` plus `configs/ppo_learned_reward_smoke.json` for learned-reward RL.
+See `configs/smoke.json` for pretraining, `configs/sft-smoke.json` for full-model supervised fine-tuning, `configs/lora-sft-smoke.json` for LoRA SFT, `configs/distill-hard-sft-smoke.json` for hard distillation, `configs/distill-soft-smoke.json` for soft-logit distillation, `configs/dpo-smoke.json` for DPO, `configs/reward-model-smoke.json` for reward model training, `configs/grpo-smoke.json` and `configs/ppo-smoke.json` for rule-reward RL, and `configs/grpo-learned-reward-smoke.json` plus `configs/ppo-learned-reward-smoke.json` for learned-reward RL.
 
 Useful runtime flags in `train`:
 
@@ -151,6 +168,15 @@ LoRA is enabled through the optional `lora` config section. When `train_base` is
     "target_modules": ["q_proj", "v_proj"]
   }
 }
+```
+
+Adapter checkpoints can be folded into a plain full-model checkpoint:
+
+```bash
+# Merge LoRA weights into base Linear weights and disable the lora_config flag.
+uv run anila checkpoint merge-lora \
+  --checkpoint runs/lora-sft-smoke/checkpoints/latest.pt \
+  --out runs/lora-sft-smoke/checkpoints/merged.pt
 ```
 
 ## Distillation

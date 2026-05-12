@@ -105,8 +105,18 @@ class TrainConfig:
             raise ValueError("train.warmup_steps cannot be negative")
         if self.weight_decay < 0:
             raise ValueError("train.weight_decay cannot be negative")
+        if not 0.0 <= self.beta1 < 1.0:
+            raise ValueError("train.beta1 must be in [0, 1)")
+        if not 0.0 <= self.beta2 < 1.0:
+            raise ValueError("train.beta2 must be in [0, 1)")
         if self.grad_clip < 0:
             raise ValueError("train.grad_clip cannot be negative")
+        if self.num_workers < 0:
+            raise ValueError("train.num_workers cannot be negative")
+        if not isinstance(self.out_dir, str) or not self.out_dir:
+            raise ValueError("train.out_dir must be a non-empty string")
+        if not isinstance(self.device, str) or not self.device:
+            raise ValueError("train.device must be a non-empty string")
         if self.eval_interval <= 0 or self.save_interval <= 0 or self.log_interval <= 0:
             raise ValueError("train intervals must be positive")
         if self.eval_batches <= 0:
