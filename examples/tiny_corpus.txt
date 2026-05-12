@@ -1,0 +1,8 @@
+Anila is a small language model training project.
+It learns from plain text and predicts the next token.
+Good engineering makes experiments easier to repeat.
+Small models are useful because every part can be inspected.
+The tokenizer turns text into ids, and the model turns ids into logits.
+Training is a loop of batches, loss, gradients, optimizer steps, and checkpoints.
+Anila favors simple interfaces and clear implementation.
+From zero to one means the first version should actually run.

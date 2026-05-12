@@ -1,0 +1,26 @@
+{
+  "model": {
+    "context_length": 64,
+    "n_layer": 2,
+    "n_head": 4,
+    "n_kv_head": 2,
+    "n_embd": 128,
+    "dropout": 0.0
+  },
+  "train": {
+    "dataset_path": "examples/tiny_corpus.txt",
+    "tokenizer_path": "runs/tokenizer",
+    "out_dir": "runs/smoke",
+    "batch_size": 8,
+    "max_steps": 20,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.1,
+    "warmup_steps": 2,
+    "eval_interval": 10,
+    "save_interval": 10,
+    "log_interval": 5,
+    "device": "auto",
+    "dtype": "auto",
+    "compile": false
+  }
+}
