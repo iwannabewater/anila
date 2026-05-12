@@ -17,6 +17,7 @@ def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
         raise ValueError(f"Checkpoint must contain a dictionary payload: {checkpoint}")
 
     train_config = payload.get("train_config")
+    data_config = payload.get("data_config")
     model_config = payload.get("model_config")
     lora_config = payload.get("lora_config")
     summary: dict[str, Any] = {
@@ -48,6 +49,11 @@ def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
             "dataset_path": train_config.get("dataset_path"),
             "out_dir": train_config.get("out_dir"),
             "max_steps": train_config.get("max_steps"),
+        }
+    if isinstance(data_config, dict):
+        summary["data"] = {
+            "pretrain_mode": data_config.get("pretrain_mode"),
+            "sequence_stride": data_config.get("sequence_stride"),
         }
     return summary
 

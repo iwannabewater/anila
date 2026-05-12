@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.cli import app
-from anila.config import LoRAConfig, ModelConfig, TrainConfig
+from anila.config import DataConfig, LoRAConfig, ModelConfig, TrainConfig
 from anila.model import AnilaLM
 from anila.peft import LoRALinear, apply_lora
 
@@ -24,6 +24,7 @@ def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
             "train_config": asdict(
                 TrainConfig(dataset_path="data.jsonl", tokenizer_path="tokenizer", objective="reward_model")
             ),
+            "data_config": asdict(DataConfig(pretrain_mode="packed")),
             "tokenizer_path": "tokenizer",
             "lora_config": {"enabled": False},
             "value_head": None,
@@ -41,6 +42,7 @@ def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
     assert summary["has_reward_head"] is True
     assert summary["model"]["context_length"] == 64
     assert summary["train"]["objective"] == "reward_model"
+    assert summary["data"]["pretrain_mode"] == "packed"
 
 
 def test_inspect_checkpoint_cli_prints_json(tmp_path: Path) -> None:

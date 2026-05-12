@@ -10,6 +10,7 @@ T = TypeVar("T")
 
 SUPPORTED_OBJECTIVES = {"pretrain", "sft", "distill", "dpo", "grpo", "ppo", "reward_model"}
 SUPPORTED_DATA_OBJECTIVES = {"pretrain", "sft"}
+SUPPORTED_PRETRAIN_DATA_MODES = {"sliding_window", "packed", "streaming"}
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,26 @@ class TrainConfig:
         for name in ("compile", "allow_tf32", "gradient_checkpointing", "fused_adamw"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"train.{name} must be a boolean")
+        return self
+
+
+@dataclass(frozen=True)
+class DataConfig:
+    pretrain_mode: str = "sliding_window"
+    sequence_stride: int | None = None
+
+    def validated(self) -> DataConfig:
+        if self.pretrain_mode not in SUPPORTED_PRETRAIN_DATA_MODES:
+            raise ValueError(
+                f"data.pretrain_mode must be one of: {', '.join(sorted(SUPPORTED_PRETRAIN_DATA_MODES))}"
+            )
+        if self.sequence_stride is not None:
+            if isinstance(self.sequence_stride, bool) or not isinstance(self.sequence_stride, int):
+                raise ValueError("data.sequence_stride must be a positive integer when provided")
+            if self.sequence_stride <= 0:
+                raise ValueError("data.sequence_stride must be positive when provided")
+            if self.pretrain_mode != "sliding_window":
+                raise ValueError("data.sequence_stride is only supported when data.pretrain_mode is sliding_window")
         return self
 
 
@@ -376,6 +397,7 @@ class SFTConfig:
 class RunConfig:
     model: ModelConfig
     train: TrainConfig
+    data: DataConfig = field(default_factory=DataConfig)
     lora: LoRAConfig = field(default_factory=LoRAConfig)
     distill: DistillConfig = field(default_factory=DistillConfig)
     dpo: DPOConfig = field(default_factory=DPOConfig)
@@ -425,7 +447,7 @@ def load_mapping(path: str | Path) -> dict[str, Any]:
 
 def load_run_config(path: str | Path) -> RunConfig:
     data = load_mapping(path)
-    unknown = sorted(set(data) - {"model", "train", "lora", "distill", "dpo", "grpo", "ppo", "reward", "sft"})
+    unknown = sorted(set(data) - {"model", "train", "data", "lora", "distill", "dpo", "grpo", "ppo", "reward", "sft"})
     if unknown:
         raise ValueError(f"Unknown top-level config section(s): {', '.join(unknown)}")
     if "train" not in data:
@@ -433,6 +455,7 @@ def load_run_config(path: str | Path) -> RunConfig:
 
     model = _dataclass_from_mapping(ModelConfig, data.get("model", {}), section="model").validated()
     train = _dataclass_from_mapping(TrainConfig, data["train"], section="train").validated()
+    data_config = _dataclass_from_mapping(DataConfig, data.get("data", {}), section="data").validated()
     lora = _dataclass_from_mapping(LoRAConfig, data.get("lora", {}), section="lora").validated()
     distill = _dataclass_from_mapping(DistillConfig, data.get("distill", {}), section="distill").validated()
     dpo = _dataclass_from_mapping(DPOConfig, data.get("dpo", {}), section="dpo").validated()
@@ -443,6 +466,7 @@ def load_run_config(path: str | Path) -> RunConfig:
     return RunConfig(
         model=model,
         train=train,
+        data=data_config,
         lora=lora,
         distill=distill,
         dpo=dpo,

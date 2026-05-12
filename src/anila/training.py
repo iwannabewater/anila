@@ -114,7 +114,19 @@ def configure_torch_runtime(cfg: TrainConfig, device: torch.device) -> None:
 
 def cycle(loader) -> Iterator[tuple[Any, ...]]:
     while True:
-        yield from loader
+        yielded = False
+        for batch in loader:
+            yielded = True
+            yield batch
+        if not yielded:
+            raise ValueError("Dataloader produced no batches; reduce batch_size or add data")
+
+
+def _dataloader_is_empty(loader) -> bool:
+    try:
+        return len(loader) == 0
+    except TypeError:
+        return False
 
 
 class CheckpointManager:
@@ -258,6 +270,7 @@ class Trainer:
             batch_size=self.train_cfg.batch_size,
             objective=data_objective,
             sft_config=self.config.sft,
+            data_config=self.config.data,
             dpo_config=self.config.dpo,
             grpo_config=self.config.grpo,
             ppo_config=self.config.ppo,
@@ -274,6 +287,7 @@ class Trainer:
             batch_size=self.train_cfg.batch_size,
             objective=data_objective,
             sft_config=self.config.sft,
+            data_config=self.config.data,
             dpo_config=self.config.dpo,
             grpo_config=self.config.grpo,
             ppo_config=self.config.ppo,
@@ -282,9 +296,9 @@ class Trainer:
             num_workers=self.train_cfg.num_workers,
             drop_last=False,
         )
-        if len(self.train_loader) == 0:
+        if _dataloader_is_empty(self.train_loader):
             raise ValueError("Training dataloader is empty; reduce batch_size or add data")
-        if len(self.eval_loader) == 0:
+        if _dataloader_is_empty(self.eval_loader):
             raise ValueError("Evaluation dataloader is empty; reduce batch_size or add validation data")
 
     def train(self) -> None:
@@ -371,6 +385,7 @@ class Trainer:
             "model": self._raw_model().state_dict(),
             "model_config": asdict(self.model_cfg),
             "train_config": asdict(self.train_cfg),
+            "data_config": asdict(self.config.data),
             "distill_config": asdict(self.config.distill),
             "lora_config": asdict(self.config.lora),
             "lora_targets": self.lora_targets,
@@ -434,6 +449,7 @@ class Trainer:
             "objective": self.train_cfg.objective,
             "model_config": asdict(self.model_cfg),
             "train_config": asdict(self.train_cfg),
+            "data_config": asdict(self.config.data),
             "lora_config": asdict(self.config.lora),
             "lora_targets": self.lora_targets,
             "adapter": lora_state_dict(self._raw_model()),

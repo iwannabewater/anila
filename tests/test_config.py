@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from anila.config import ModelConfig, RewardConfig, load_run_config
+from anila.config import DataConfig, ModelConfig, RewardConfig, load_run_config
 
 
 def test_model_config_fills_kv_heads() -> None:
@@ -28,6 +28,16 @@ def test_load_run_config_rejects_unknown_keys(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="Unknown config key"):
         load_run_config(path)
+
+
+def test_data_config_validates_pretrain_mode() -> None:
+    with pytest.raises(ValueError, match="data.pretrain_mode"):
+        DataConfig(pretrain_mode="unknown").validated()
+
+
+def test_data_config_rejects_stride_outside_sliding_window() -> None:
+    with pytest.raises(ValueError, match="sequence_stride"):
+        DataConfig(pretrain_mode="packed", sequence_stride=8).validated()
 
 
 def test_quickstart_configs_are_loadable() -> None:
@@ -62,6 +72,7 @@ def test_load_sft_run_config(tmp_path: Path) -> None:
             "dataset_path": ["train.jsonl", "more.jsonl"],
             "tokenizer_path": "tokenizer"
           },
+          "data": {"pretrain_mode": "packed"},
           "lora": {"enabled": true, "rank": 4, "target_modules": ["q_proj", "v_proj"]},
           "distill": {"mode": "hard", "data_objective": "sft"},
           "dpo": {"beta": 0.2},
@@ -78,6 +89,7 @@ def test_load_sft_run_config(tmp_path: Path) -> None:
 
     assert cfg.train.objective == "sft"
     assert cfg.train.dataset_path == ["train.jsonl", "more.jsonl"]
+    assert cfg.data.pretrain_mode == "packed"
     assert cfg.lora.enabled is True
     assert cfg.lora.rank == 4
     assert cfg.distill.mode == "hard"

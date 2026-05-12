@@ -9,7 +9,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from anila.config import DPOConfig, LoRAConfig, ModelConfig, RewardConfig, SFTConfig
+from anila.config import DataConfig, DPOConfig, LoRAConfig, ModelConfig, RewardConfig, SFTConfig
 from anila.data import IGNORE_INDEX, create_dataloader
 from anila.dpo import sequence_logprobs
 from anila.model import AnilaLM
@@ -29,6 +29,7 @@ def evaluate_lm_checkpoint(
     max_batches: int | None = None,
     device: str = "auto",
     sft_config: SFTConfig | None = None,
+    data_config: DataConfig | None = None,
 ) -> dict[str, Any]:
     if objective not in {"pretrain", "sft"}:
         raise ValueError("LM evaluation objective must be pretrain or sft")
@@ -40,6 +41,7 @@ def evaluate_lm_checkpoint(
     tokenizer = AnilaTokenizer.load(tokenizer_path)
     model, payload = _load_policy_model(checkpoint, runtime_device)
     resolved_sft_config = sft_config or _validated_config_from_payload(payload, "sft_config", SFTConfig, SFTConfig())
+    resolved_data_config = data_config or _validated_config_from_payload(payload, "data_config", DataConfig, DataConfig())
     loader = create_dataloader(
         dataset_path,
         tokenizer,
@@ -47,6 +49,7 @@ def evaluate_lm_checkpoint(
         batch_size=batch_size,
         objective=objective,
         sft_config=resolved_sft_config,
+        data_config=resolved_data_config,
         shuffle=False,
         drop_last=False,
     )
@@ -266,7 +269,7 @@ def _move_batch_to_device(batch: Any, device: torch.device) -> Any:
     if isinstance(batch, tuple):
         return tuple(_move_batch_to_device(item, device) for item in batch)
     if isinstance(batch, list):
-        return batch
+        return [_move_batch_to_device(item, device) for item in batch]
     return batch
 
 

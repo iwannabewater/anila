@@ -10,6 +10,7 @@ The repository is intentionally small enough to study and modify, while still us
 - GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, and top-k/top-p sampling.
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
+- Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs with strict validation and fail-fast errors.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
 - Fast unit tests plus end-to-end integration coverage.
@@ -120,6 +121,7 @@ Run configs live under `configs/` and contain these top-level sections:
 
 - `model`: vocabulary-independent architecture settings.
 - `train`: objective, dataset, tokenizer, runtime, optimizer, evaluation, and checkpoint settings.
+- `data`: pretraining data mode and sequence-window controls.
 - `lora`: optional adapter configuration.
 - `distill`: optional hard or soft distillation settings.
 - `dpo`: optional Direct Preference Optimization settings.
@@ -137,6 +139,32 @@ Useful runtime flags in `train`:
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
 
 Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path.
+
+## Data Modes
+
+The `data` section controls how plain-text pretraining examples are produced:
+
+- `sliding_window`: the default. Builds dense overlapping next-token windows and supports `sequence_stride` when less overlap is desired.
+- `packed`: builds non-overlapping fixed-length blocks from a token stream, which is usually the practical default for larger local corpora.
+- `streaming`: reads local text files through an iterable dataset and emits packed blocks without materializing the whole corpus as one tensor.
+
+```json
+{
+  "data": {
+    "pretrain_mode": "packed"
+  }
+}
+```
+
+Use `streaming` when the corpus is too large to hold as one token tensor:
+
+```json
+{
+  "data": {
+    "pretrain_mode": "streaming"
+  }
+}
+```
 
 ## Training Objectives
 

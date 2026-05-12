@@ -33,7 +33,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 
 - `config`: parses JSON/TOML configs, applies defaults, and rejects unknown keys.
 - `tokenization`: trains and loads byte-level BPE tokenizers.
-- `data`: builds contiguous next-token prediction examples from text corpora and response-masked SFT examples from JSONL records.
+- `data`: builds sliding-window, packed, or streaming next-token prediction examples from text corpora plus response-masked SFT examples from JSONL records.
 - `distillation`: loads native teacher checkpoints and computes masked soft-logit distillation loss.
 - `dpo`: computes response sequence logprobs and Direct Preference Optimization loss.
 - `grpo`: computes group-relative advantages and clipped GRPO loss with reference KL.
@@ -53,6 +53,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `latest.pt` and step checkpoints are written through a temporary file and atomically replaced.
 - `config.json` captures the validated run config and `metrics.jsonl` records train, eval, and checkpoint events under `train.out_dir`.
 - Tokenizer vocabulary size is loaded from the tokenizer artifact and becomes the model vocabulary at runtime.
+- Plain-text pretraining can use dense `sliding_window`, non-overlapping `packed`, or local-file `streaming` data modes.
 - `allow_tf32`, `gradient_checkpointing`, and `fused_adamw` are explicit train config flags so stability/performance behavior is visible in saved configs.
 - `AnilaLM.generate` uses a native KV cache by default and falls back to full-context recomputation whenever the context window must be rebased.
 - `pretrain` consumes plain text and trains all next-token targets.
@@ -72,6 +73,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - Add new model variants by keeping the `forward(input_ids, targets=None)` interface.
 - Add adapter-only load/apply commands if adapter artifacts start being distributed independently from full checkpoints.
 - Add richer evaluation suites once the current lightweight harness is stable on larger corpora and preference sets.
+- Add sharded binary token caches if local text streaming becomes the bottleneck.
 - Add DPO variants only after the base DPO path has real-data coverage.
 - Add external reward backends only after native learned reward checkpoints have broader real-data coverage.
 - Add hidden-state distillation only after model variant contracts are stable.

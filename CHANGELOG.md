@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.4 - 2026-05-12
+
+Pretraining data pipeline release.
+
+- Added a top-level `data` config section with `pretrain_mode` values `sliding_window`, `packed`, and `streaming`.
+- Added packed fixed-length pretraining blocks and streaming local text datasets without changing the default sliding-window behavior.
+- Stored `data_config` in training and adapter checkpoints and surfaced it through checkpoint inspection.
+- Switched pretraining quickstart recipes to packed mode for clearer larger-corpus defaults.
+- Added tests for packed blocks, sequence stride, streaming dataloaders, data config validation, and checkpoint summaries.
+- Updated README, architecture, development, status, and release notes for the new data pipeline.
+
 ## v0.1.3 - 2026-05-12
 
 Evaluation and quickstart naming release.

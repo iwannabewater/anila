@@ -1,10 +1,13 @@
 from pathlib import Path
 
-from anila.config import DPOConfig, GRPOConfig, PPOConfig, RewardConfig, SFTConfig
+import pytest
+
+from anila.config import DataConfig, DPOConfig, GRPOConfig, PPOConfig, RewardConfig, SFTConfig, load_run_config
 from anila.data import (
     IGNORE_INDEX,
     PreferenceDataset,
     PromptRewardDataset,
+    StreamingTextTokenDataset,
     SupervisedFineTuneDataset,
     TextTokenDataset,
     create_dataloader,
@@ -37,6 +40,102 @@ def test_pretrain_dataset_accepts_multiple_files(tmp_path: Path) -> None:
     assert len(dataset) > 0
     x, y = dataset[0]
     assert x.shape == y.shape == (8,)
+
+
+def test_pretrain_dataset_supports_packed_blocks(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "corpus.txt"
+    data.write_text("Anila packs local text into fixed training blocks.\n" * 20, encoding="utf-8")
+
+    sliding = TextTokenDataset(data, tokenizer, context_length=8)
+    packed = TextTokenDataset(data, tokenizer, context_length=8, config=DataConfig(pretrain_mode="packed"))
+
+    assert 0 < len(packed) < len(sliding)
+    first_x, first_y = packed[0]
+    second_x, _ = packed[1]
+    assert first_x.shape == first_y.shape == (8,)
+    assert second_x[0].item() == first_y[-1].item()
+
+
+def test_pretrain_dataset_supports_sliding_stride(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "corpus.txt"
+    data.write_text("Sliding strides reduce overlap while staying map-style.\n" * 20, encoding="utf-8")
+
+    dense = TextTokenDataset(data, tokenizer, context_length=8)
+    strided = TextTokenDataset(data, tokenizer, context_length=8, config=DataConfig(sequence_stride=4))
+
+    assert 0 < len(strided) < len(dense)
+    second_x, _ = strided[1]
+    assert second_x[0].item() == dense.tokens[4].item()
+
+
+def test_streaming_pretrain_dataset_yields_fixed_length_blocks(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "corpus.txt"
+    data.write_text("Streaming avoids materializing the whole corpus tensor.\n" * 20, encoding="utf-8")
+
+    dataset = StreamingTextTokenDataset(data, tokenizer, context_length=8)
+    x, y = next(iter(dataset))
+
+    assert x.shape == y.shape == (8,)
+
+
+def test_streaming_pretrain_dataloader_batches_examples(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "corpus.txt"
+    data.write_text("Streaming dataloaders emit regular language-model batches.\n" * 20, encoding="utf-8")
+
+    loader = create_dataloader(
+        data,
+        tokenizer,
+        context_length=8,
+        batch_size=2,
+        objective="pretrain",
+        data_config=DataConfig(pretrain_mode="streaming"),
+        shuffle=True,
+        drop_last=False,
+    )
+    input_ids, labels = next(iter(loader))
+
+    assert input_ids.shape == labels.shape == (2, 8)
+
+
+def test_streaming_pretrain_dataset_rejects_too_small_corpus(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "tiny.txt"
+    data.write_text("short\n", encoding="utf-8")
+
+    dataset = StreamingTextTokenDataset(data, tokenizer, context_length=128)
+    with pytest.raises(ValueError, match="produced no"):
+        next(iter(dataset))
+
+
+@pytest.mark.parametrize("config_name", ["pretrain.json", "distill-soft-pretrain.json"])
+def test_packed_pretrain_quickstart_configs_have_training_batches(tmp_path: Path, config_name: str) -> None:
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer = train_byte_bpe(
+        [Path("examples/tiny_corpus.txt"), Path("examples/tiny_sft.jsonl")],
+        tokenizer_dir,
+        vocab_size=512,
+        min_frequency=1,
+    )
+    cfg = load_run_config(Path("configs/quickstart") / config_name)
+    data_objective = cfg.distill.data_objective if cfg.train.objective == "distill" else cfg.train.objective
+
+    loader = create_dataloader(
+        cfg.train.dataset_path,
+        tokenizer,
+        context_length=cfg.model.context_length,
+        batch_size=cfg.train.batch_size,
+        objective=data_objective,
+        data_config=cfg.data,
+        drop_last=True,
+    )
+    input_ids, labels = next(iter(loader))
+
+    assert input_ids.shape == labels.shape
+    assert input_ids.size(0) == cfg.train.batch_size
 
 
 def test_sft_dataset_masks_prompt_tokens(tmp_path: Path) -> None:

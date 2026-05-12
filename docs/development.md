@@ -91,6 +91,8 @@ Each run writes `config.json` and `metrics.jsonl` under `train.out_dir`. These f
 
 Quickstart configs are intentionally tiny, readable recipes under `configs/quickstart/`. Test-only end-to-end checks live under `tests/` and use integration-test naming.
 
+The pretraining quickstart uses `data.pretrain_mode = "packed"`. The default remains `sliding_window` for backward-compatible configs, and `streaming` is available for larger local text files that should not be materialized as one corpus tensor.
+
 ## Runtime Flags
 
 The trainer keeps performance-oriented behavior explicit in `train` config:
@@ -114,6 +116,7 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `model`: model state dict.
 - `model_config`: model config as plain data.
 - `train_config`: train config as plain data.
+- `data_config`: pretraining data mode and sequence-window controls as plain data.
 - `lora_config`: LoRA config as plain data.
 - `lora_targets`: projection modules that were wrapped with LoRA.
 - `adapter_checkpoint`: adapter-only checkpoint path when LoRA adapter saving is enabled.

@@ -5,9 +5,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
-from anila.config import DPOConfig, GRPOConfig, PPOConfig, RewardConfig, SFTConfig
+from anila.config import DataConfig, DPOConfig, GRPOConfig, PPOConfig, RewardConfig, SFTConfig
 from anila.tokenization import AnilaTokenizer
 
 IGNORE_INDEX = -100
@@ -21,27 +21,80 @@ def normalize_paths(paths: PathInput) -> list[Path]:
 
 
 class TextTokenDataset(Dataset):
-    def __init__(self, path: PathInput, tokenizer: AnilaTokenizer, context_length: int):
+    def __init__(
+        self,
+        path: PathInput,
+        tokenizer: AnilaTokenizer,
+        context_length: int,
+        config: DataConfig | None = None,
+    ):
         if context_length <= 0:
             raise ValueError("context_length must be positive")
+        self.config = (config or DataConfig()).validated()
+        if self.config.pretrain_mode == "streaming":
+            raise ValueError("Use StreamingTextTokenDataset when data.pretrain_mode is streaming")
         text = "\n".join(
             input_path.read_text(encoding="utf-8", errors="ignore") for input_path in normalize_paths(path)
         )
         ids = tokenizer.encode(text, add_bos=True, add_eos=True)
-        if len(ids) < context_length + 2:
+        if len(ids) < context_length + 1:
             raise ValueError(
-                f"Dataset has {len(ids)} tokens, but at least {context_length + 2} are required. "
+                f"Dataset has {len(ids)} tokens, but at least {context_length + 1} are required. "
                 "Use a smaller context_length or a larger corpus."
             )
         self.tokens = torch.tensor(ids, dtype=torch.long)
         self.context_length = context_length
+        self.stride = _pretrain_stride(self.config, context_length)
+        self.num_examples = _num_pretrain_examples(len(self.tokens), context_length, self.stride)
 
     def __len__(self) -> int:
-        return len(self.tokens) - self.context_length
+        return self.num_examples
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        chunk = self.tokens[index : index + self.context_length + 1]
+        chunk_start = index * self.stride
+        chunk = self.tokens[chunk_start : chunk_start + self.context_length + 1]
         return chunk[:-1], chunk[1:]
+
+
+class StreamingTextTokenDataset(IterableDataset):
+    def __init__(
+        self,
+        path: PathInput,
+        tokenizer: AnilaTokenizer,
+        context_length: int,
+        config: DataConfig | None = None,
+    ):
+        if context_length <= 0:
+            raise ValueError("context_length must be positive")
+        self.paths = normalize_paths(path)
+        self.tokenizer = tokenizer
+        self.context_length = context_length
+        self.config = (config or DataConfig(pretrain_mode="streaming")).validated()
+        if self.config.pretrain_mode != "streaming":
+            raise ValueError("StreamingTextTokenDataset requires data.pretrain_mode = streaming")
+
+    def __iter__(self):
+        emitted = False
+        buffer: list[int] = [self.tokenizer.bos_id]
+        worker = get_worker_info()
+        for input_path in _worker_paths(self.paths):
+            with input_path.open("r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    buffer.extend(self.tokenizer.encode(line))
+                    while len(buffer) >= self.context_length + 1:
+                        yield _tokens_to_lm_pair(buffer[: self.context_length + 1])
+                        emitted = True
+                        del buffer[: self.context_length]
+        buffer.append(self.tokenizer.eos_id)
+        while len(buffer) >= self.context_length + 1:
+            yield _tokens_to_lm_pair(buffer[: self.context_length + 1])
+            emitted = True
+            del buffer[: self.context_length]
+        if not emitted and worker is None:
+            raise ValueError(
+                f"Streaming dataset produced no {self.context_length}-token examples. "
+                "Use a smaller context_length or a larger corpus."
+            )
 
 
 class SupervisedFineTuneDataset(Dataset):
@@ -388,6 +441,7 @@ def create_dataloader(
     objective: str = "pretrain",
     sft_config: SFTConfig | None = None,
     dpo_config: DPOConfig | None = None,
+    data_config: DataConfig | None = None,
     grpo_config: GRPOConfig | None = None,
     ppo_config: PPOConfig | None = None,
     reward_config: RewardConfig | None = None,
@@ -396,7 +450,11 @@ def create_dataloader(
     drop_last: bool = True,
 ) -> DataLoader:
     if objective == "pretrain":
-        dataset = TextTokenDataset(path, tokenizer, context_length)
+        resolved_data_config = (data_config or DataConfig()).validated()
+        if resolved_data_config.pretrain_mode == "streaming":
+            dataset = StreamingTextTokenDataset(path, tokenizer, context_length, resolved_data_config)
+        else:
+            dataset = TextTokenDataset(path, tokenizer, context_length, resolved_data_config)
         collate_fn = None
     elif objective == "sft":
         dataset = SupervisedFineTuneDataset(path, tokenizer, context_length, sft_config)
@@ -418,9 +476,31 @@ def create_dataloader(
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle and not isinstance(dataset, IterableDataset),
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
         drop_last=drop_last,
         collate_fn=collate_fn,
     )
+
+
+def _pretrain_stride(config: DataConfig, context_length: int) -> int:
+    if config.pretrain_mode == "packed":
+        return context_length
+    return config.sequence_stride or 1
+
+
+def _num_pretrain_examples(token_count: int, context_length: int, stride: int) -> int:
+    return max(0, ((token_count - (context_length + 1)) // stride) + 1)
+
+
+def _tokens_to_lm_pair(tokens: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    chunk = torch.tensor(tokens, dtype=torch.long)
+    return chunk[:-1], chunk[1:]
+
+
+def _worker_paths(paths: list[Path]) -> list[Path]:
+    worker = get_worker_info()
+    if worker is None:
+        return paths
+    return paths[worker.id :: worker.num_workers]

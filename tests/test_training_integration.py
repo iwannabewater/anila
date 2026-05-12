@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from anila.config import (
+    DataConfig,
     DistillConfig,
     GRPOConfig,
     LoRAConfig,
@@ -41,6 +42,7 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
             device="cpu",
             dtype="float32",
         ),
+        data=DataConfig(pretrain_mode="packed"),
     )
     Trainer(run).train()
     checkpoint = tmp_path / "run" / "checkpoints" / "latest.pt"
@@ -53,7 +55,10 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     metric_events = [json.loads(line)["event"] for line in metrics.read_text(encoding="utf-8").splitlines()]
     assert payload["schema_version"] == 1
     assert payload["objective"] == "pretrain"
-    assert json.loads(config_snapshot.read_text(encoding="utf-8"))["train"]["objective"] == "pretrain"
+    assert payload["data_config"]["pretrain_mode"] == "packed"
+    snapshot = json.loads(config_snapshot.read_text(encoding="utf-8"))
+    assert snapshot["train"]["objective"] == "pretrain"
+    assert snapshot["data"]["pretrain_mode"] == "packed"
     assert {"train", "eval", "checkpoint"}.issubset(metric_events)
 
 

@@ -6,7 +6,12 @@ from typer.testing import CliRunner
 
 from anila.cli import app
 from anila.config import LoRAConfig, ModelConfig, RewardConfig, SFTConfig
-from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
+from anila.evaluation import (
+    _move_batch_to_device,
+    evaluate_lm_checkpoint,
+    evaluate_policy_preferences,
+    evaluate_reward_model,
+)
 from anila.model import AnilaLM
 from anila.reward import RewardModel
 from anila.tokenization import train_byte_bpe
@@ -103,6 +108,17 @@ def test_evaluate_lm_checkpoint_uses_sft_config_from_checkpoint(tmp_path: Path) 
 
     assert metrics["objective"] == "sft"
     assert metrics["num_tokens"] > 0
+
+
+def test_evaluation_batch_device_move_handles_collated_lists() -> None:
+    batch = [torch.tensor([1]), (torch.tensor([2]), ["target"])]
+
+    moved = _move_batch_to_device(batch, torch.device("cpu"))
+
+    assert isinstance(moved, list)
+    assert moved[0].device.type == "cpu"
+    assert moved[1][0].device.type == "cpu"
+    assert moved[1][1] == ["target"]
 
 
 def test_evaluate_policy_preferences_reports_accuracy(tmp_path: Path) -> None:

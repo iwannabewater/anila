@@ -1,5 +1,6 @@
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import (
+    DataConfig,
     DistillConfig,
     DPOConfig,
     GRPOConfig,
@@ -18,6 +19,7 @@ from anila.reward import RewardModel
 
 __all__ = [
     "AnilaLM",
+    "DataConfig",
     "DPOConfig",
     "DistillConfig",
     "GRPOConfig",
