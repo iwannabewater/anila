@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
@@ -13,9 +14,21 @@ import numpy as np
 import torch
 from rich.console import Console
 
-from anila.config import RunConfig, TrainConfig
-from anila.data import create_dataloader
+from anila.config import LoRAConfig, RunConfig, TrainConfig
+from anila.data import IGNORE_INDEX, create_dataloader
+from anila.distillation import load_teacher_model, soft_distillation_loss
+from anila.dpo import dpo_loss, sequence_logprobs
+from anila.grpo import group_advantages, grpo_loss
 from anila.model import AnilaLM
+from anila.peft import (
+    adapt_state_dict_for_lora,
+    apply_lora,
+    lora_state_dict,
+    mark_lora_trainable,
+    trainable_parameter_count,
+)
+from anila.ppo import PolicyValueModel, compute_gae, normalize_masked, ppo_loss, token_entropy, token_logprobs
+from anila.reward import RewardModel, RewardScorer, build_reward_scorer, reward_model_loss
 from anila.tokenization import AnilaTokenizer
 
 console = Console()
@@ -66,6 +79,8 @@ def configure_optimizer(model: torch.nn.Module, cfg: TrainConfig) -> torch.optim
             decay.append(param)
         else:
             no_decay.append(param)
+    if not decay and not no_decay:
+        raise ValueError("No trainable parameters found for optimizer")
     return torch.optim.AdamW(
         [
             {"params": decay, "weight_decay": cfg.weight_decay},
@@ -76,7 +91,15 @@ def configure_optimizer(model: torch.nn.Module, cfg: TrainConfig) -> torch.optim
     )
 
 
-def cycle(loader) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+def format_parameter_count(count: int) -> str:
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.2f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.2f}K"
+    return str(count)
+
+
+def cycle(loader) -> Iterator[tuple[Any, ...]]:
     while True:
         yield from loader
 
@@ -90,10 +113,22 @@ class CheckpointManager:
     def latest_path(self) -> Path:
         return self.root / "latest.pt"
 
+    @property
+    def latest_adapter_path(self) -> Path:
+        return self.root / "adapters" / "latest.pt"
+
     def save(self, payload: dict[str, Any], *, step: int) -> Path:
         step_path = self.root / f"step_{step:08d}.pt"
         self._atomic_save(payload, step_path)
         self._atomic_save(payload, self.latest_path)
+        return step_path
+
+    def save_adapter(self, payload: dict[str, Any], *, step: int) -> Path:
+        adapter_root = self.root / "adapters"
+        adapter_root.mkdir(parents=True, exist_ok=True)
+        step_path = adapter_root / f"step_{step:08d}.pt"
+        self._atomic_save(payload, step_path)
+        self._atomic_save(payload, self.latest_adapter_path)
         return step_path
 
     def load(self, path: str | Path | None = None) -> dict[str, Any]:
@@ -109,6 +144,24 @@ class CheckpointManager:
         os.replace(tmp, path)
 
 
+class RunRecorder:
+    def __init__(self, out_dir: str | Path):
+        self.root = Path(out_dir)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.metrics_path = self.root / "metrics.jsonl"
+        self.config_path = self.root / "config.json"
+
+    def write_config(self, config: RunConfig) -> None:
+        payload = config.to_dict()
+        tmp = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, self.config_path)
+
+    def append(self, **record: Any) -> None:
+        with self.metrics_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+
+
 class Trainer:
     def __init__(self, config: RunConfig):
         self.config = config
@@ -119,24 +172,84 @@ class Trainer:
 
         self.tokenizer = AnilaTokenizer.load(self.train_cfg.tokenizer_path)
         self.model_cfg = replace(config.model, vocab_size=self.tokenizer.vocab_size).validated()
-        self.model = AnilaLM(self.model_cfg).to(self.device)
+        self.model = AnilaLM(self.model_cfg)
+        self.lora_targets: list[str] = []
+        if self.config.lora.enabled:
+            self.lora_targets = apply_lora(self.model, self.config.lora)
+            mark_lora_trainable(
+                self.model,
+                train_base=self.config.lora.train_base,
+                train_bias=self.config.lora.train_bias,
+            )
+        initial_payload = None
+        if self.train_cfg.init_from:
+            initial_payload = self._load_initial_weights(self.train_cfg.init_from)
+        if self.train_cfg.objective == "ppo":
+            self.model = PolicyValueModel(self.model)
+            if initial_payload is not None and initial_payload.get("value_head") is not None:
+                self._value_model().value_head.load_state_dict(initial_payload["value_head"])
+        if self.train_cfg.objective == "reward_model":
+            self.model = RewardModel(self.model)
+            if initial_payload is not None and initial_payload.get("reward_head") is not None:
+                self._reward_model().reward_head.load_state_dict(initial_payload["reward_head"])
+        self.model = self.model.to(self.device)
+        self.teacher_model: AnilaLM | None = None
+        if self.train_cfg.objective == "distill" and self.config.distill.mode == "soft":
+            if self.config.distill.teacher_checkpoint is None:
+                raise ValueError("distill.teacher_checkpoint is required for soft distillation")
+            self.teacher_model = load_teacher_model(self.config.distill.teacher_checkpoint, self.device)
+        self.reference_model: AnilaLM | None = None
+        if self.train_cfg.objective in {"dpo", "grpo", "ppo"}:
+            if self.train_cfg.init_from is None:
+                raise ValueError(f"{self.train_cfg.objective.upper()} requires train.init_from to initialize the policy model")
+            if self.train_cfg.objective == "dpo":
+                reference_checkpoint = self.config.dpo.reference_checkpoint
+            elif self.train_cfg.objective == "grpo":
+                reference_checkpoint = self.config.grpo.reference_checkpoint
+            else:
+                reference_checkpoint = self.config.ppo.reference_checkpoint
+            reference_checkpoint = reference_checkpoint or self.train_cfg.init_from
+            self.reference_model = self._load_reference_model(reference_checkpoint)
+        self.reward_scorer: RewardScorer | None = None
+        if self.train_cfg.objective == "grpo":
+            self.reward_scorer = build_reward_scorer(
+                self.config.reward,
+                reward_type=self.config.grpo.reward_type,
+                device=self.device,
+            )
+        if self.train_cfg.objective == "ppo":
+            self.reward_scorer = build_reward_scorer(
+                self.config.reward,
+                reward_type=self.config.ppo.reward_type,
+                device=self.device,
+            )
         if self.train_cfg.compile:
             self.model = torch.compile(self.model)
 
         self.optimizer = configure_optimizer(self.model, self.train_cfg)
+        self.recorder = RunRecorder(self.train_cfg.out_dir)
+        self.recorder.write_config(self.config)
         self.checkpoints = CheckpointManager(self.train_cfg.out_dir)
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.device.type == "cuda" and self.dtype == torch.float16)
         self.start_step = 0
         if self.train_cfg.resume:
             self._restore(self.train_cfg.resume)
 
+        data_objective = self._data_objective()
         self.train_loader = create_dataloader(
             self.train_cfg.dataset_path,
             self.tokenizer,
             context_length=self.model_cfg.context_length,
             batch_size=self.train_cfg.batch_size,
+            objective=data_objective,
+            sft_config=self.config.sft,
+            dpo_config=self.config.dpo,
+            grpo_config=self.config.grpo,
+            ppo_config=self.config.ppo,
+            reward_config=self.config.reward,
             shuffle=True,
             num_workers=self.train_cfg.num_workers,
+            drop_last=data_objective == "pretrain",
         )
         eval_path = self.train_cfg.val_dataset_path or self.train_cfg.dataset_path
         self.eval_loader = create_dataloader(
@@ -144,16 +257,27 @@ class Trainer:
             self.tokenizer,
             context_length=self.model_cfg.context_length,
             batch_size=self.train_cfg.batch_size,
+            objective=data_objective,
+            sft_config=self.config.sft,
+            dpo_config=self.config.dpo,
+            grpo_config=self.config.grpo,
+            ppo_config=self.config.ppo,
+            reward_config=self.config.reward,
             shuffle=False,
             num_workers=self.train_cfg.num_workers,
+            drop_last=False,
         )
         if len(self.train_loader) == 0:
             raise ValueError("Training dataloader is empty; reduce batch_size or add data")
+        if len(self.eval_loader) == 0:
+            raise ValueError("Evaluation dataloader is empty; reduce batch_size or add validation data")
 
     def train(self) -> None:
+        runtime_model = self._runtime_model()
         console.print(
             f"[bold]Anila[/bold] training on {self.device} with dtype={self.dtype}, "
-            f"params={self._raw_model().num_parameters() / 1e6:.2f}M"
+            f"params={format_parameter_count(sum(param.numel() for param in runtime_model.parameters()))}, "
+            f"trainable={format_parameter_count(trainable_parameter_count(runtime_model))}"
         )
         iterator = cycle(self.train_loader)
         start_time = time.time()
@@ -166,16 +290,13 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
             for _ in range(self.train_cfg.grad_accum_steps):
-                x, y = next(iterator)
-                x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+                batch = self._move_batch_to_device(next(iterator))
                 with torch.autocast(
                     device_type=self.device.type,
                     dtype=self.dtype,
                     enabled=self.dtype != torch.float32,
                 ):
-                    loss = self.model(x, targets=y).loss
-                    if loss is None:
-                        raise RuntimeError("model did not return a training loss")
+                    loss = self._compute_batch_loss(batch)
                     loss = loss / self.train_cfg.grad_accum_steps
                 self.scaler.scale(loss).backward()
                 loss_value += float(loss.detach().cpu()) * self.train_cfg.grad_accum_steps
@@ -189,12 +310,20 @@ class Trainer:
             completed_step = step + 1
             if completed_step % self.train_cfg.log_interval == 0:
                 elapsed = time.time() - start_time
+                self.recorder.append(
+                    event="train",
+                    step=completed_step,
+                    loss=loss_value,
+                    learning_rate=lr,
+                    elapsed_seconds=elapsed,
+                )
                 console.print(
                     f"step={completed_step:6d}/{self.train_cfg.max_steps} "
                     f"loss={loss_value:.4f} lr={lr:.2e} elapsed={elapsed:.1f}s"
                 )
             if completed_step % self.train_cfg.eval_interval == 0:
                 eval_loss = self.evaluate()
+                self.recorder.append(event="eval", step=completed_step, loss=eval_loss)
                 console.print(f"eval step={completed_step:6d} loss={eval_loss:.4f}")
             if completed_step % self.train_cfg.save_interval == 0:
                 self.save(completed_step)
@@ -207,39 +336,471 @@ class Trainer:
         was_training = self.model.training
         self.model.eval()
         losses = []
-        for index, (x, y) in enumerate(self.eval_loader):
+        for index, batch in enumerate(self.eval_loader):
             if index >= self.train_cfg.eval_batches:
                 break
-            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+            batch = self._move_batch_to_device(batch)
             with torch.autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.dtype != torch.float32):
-                loss = self.model(x, targets=y).loss
-            if loss is not None:
-                losses.append(float(loss.detach().cpu()))
+                loss = self._compute_batch_loss(batch)
+            losses.append(float(loss.detach().cpu()))
         if was_training:
             self.model.train()
         return sum(losses) / max(len(losses), 1)
 
     def save(self, step: int) -> Path:
+        adapter_path = self._save_adapter(step)
         payload = {
+            "schema_version": 1,
+            "objective": self.train_cfg.objective,
             "model": self._raw_model().state_dict(),
             "model_config": asdict(self.model_cfg),
             "train_config": asdict(self.train_cfg),
+            "distill_config": asdict(self.config.distill),
+            "lora_config": asdict(self.config.lora),
+            "lora_targets": self.lora_targets,
+            "adapter_checkpoint": str(adapter_path) if adapter_path else None,
+            "dpo_config": asdict(self.config.dpo),
+            "grpo_config": asdict(self.config.grpo),
+            "ppo_config": asdict(self.config.ppo),
+            "reward_config": asdict(self.config.reward),
+            "value_head": self._value_model().value_head.state_dict() if self.train_cfg.objective == "ppo" else None,
+            "reward_head": self._reward_model().reward_head.state_dict()
+            if self.train_cfg.objective == "reward_model"
+            else None,
+            "sft_config": asdict(self.config.sft),
+            "tokenizer_path": self.train_cfg.tokenizer_path,
             "step": step,
             "optimizer": self.optimizer.state_dict(),
         }
         path = self.checkpoints.save(payload, step=step)
+        self.recorder.append(event="checkpoint", step=step, path=str(path))
         console.print(f"saved checkpoint: {path}")
         return path
 
     def _restore(self, path: str) -> None:
         payload = self.checkpoints.load(path)
-        self.model.load_state_dict(payload["model"])
+        self._raw_model().load_state_dict(payload["model"])
+        if self.train_cfg.objective == "ppo" and payload.get("value_head") is not None:
+            self._value_model().value_head.load_state_dict(payload["value_head"])
+        if self.train_cfg.objective == "reward_model" and payload.get("reward_head") is not None:
+            self._reward_model().reward_head.load_state_dict(payload["reward_head"])
         if "optimizer" in payload:
             self.optimizer.load_state_dict(payload["optimizer"])
         self.start_step = int(payload.get("step", 0))
 
-    def _raw_model(self) -> AnilaLM:
+    def _load_initial_weights(self, path: str) -> dict[str, Any]:
+        payload = torch.load(path, map_location="cpu")
+        if "model" not in payload:
+            raise ValueError(f"Initial checkpoint does not contain model weights: {path}")
+        state_dict = payload["model"]
+        if self.config.lora.enabled:
+            state_dict = adapt_state_dict_for_lora(self.model, state_dict)
+        missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+        unexpected = [key for key in unexpected if ".lora_" not in key]
+        missing = [
+            key
+            for key in missing
+            if ".lora_" not in key
+        ]
+        if missing or unexpected:
+            raise RuntimeError(
+                "Initial checkpoint is not compatible with the current model "
+                f"(missing={missing}, unexpected={unexpected})"
+            )
+        return payload
+
+    def _save_adapter(self, step: int) -> Path | None:
+        if not self.config.lora.enabled or not self.config.lora.save_adapter:
+            return None
+        payload = {
+            "schema_version": 1,
+            "artifact": "lora_adapter",
+            "objective": self.train_cfg.objective,
+            "model_config": asdict(self.model_cfg),
+            "train_config": asdict(self.train_cfg),
+            "lora_config": asdict(self.config.lora),
+            "lora_targets": self.lora_targets,
+            "adapter": lora_state_dict(self._raw_model()),
+            "step": step,
+        }
+        return self.checkpoints.save_adapter(payload, step=step)
+
+    def _compute_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if self.train_cfg.objective == "distill" and self.config.distill.mode == "soft":
+            if self.teacher_model is None:
+                raise RuntimeError("teacher model is not loaded")
+            student_logits = self.model(x).logits
+            with torch.no_grad():
+                teacher_logits = self.teacher_model(x).logits
+            return soft_distillation_loss(student_logits, teacher_logits, y, self.config.distill).loss
+        loss = self.model(x, targets=y).loss
+        if loss is None:
+            raise RuntimeError("model did not return a training loss")
+        return loss
+
+    def _data_objective(self) -> str:
+        if self.train_cfg.objective == "distill":
+            return self.config.distill.data_objective
+        if self.train_cfg.objective in {"dpo", "grpo", "ppo", "reward_model"}:
+            return self.train_cfg.objective
+        return self.train_cfg.objective
+
+    def _compute_batch_loss(self, batch: tuple[Any, ...]) -> torch.Tensor:
+        if self.train_cfg.objective == "dpo":
+            if len(batch) != 4:
+                raise RuntimeError("DPO batch must contain chosen and rejected input/label tensors")
+            return self._compute_dpo_loss(*batch)
+        if self.train_cfg.objective == "reward_model":
+            if len(batch) != 4:
+                raise RuntimeError("reward_model batch must contain chosen and rejected input/label tensors")
+            return self._compute_reward_model_loss(*batch)
+        if self.train_cfg.objective == "grpo":
+            if len(batch) != 3:
+                raise RuntimeError("GRPO batch must contain prompt ids, prompt lengths, and expected responses")
+            return self._compute_grpo_loss(*batch)
+        if self.train_cfg.objective == "ppo":
+            if len(batch) != 3:
+                raise RuntimeError("PPO batch must contain prompt ids, prompt lengths, and expected responses")
+            return self._compute_ppo_loss(*batch)
+        if len(batch) != 2:
+            raise RuntimeError("LM batch must contain input and label tensors")
+        return self._compute_loss(batch[0], batch[1])
+
+    def _compute_dpo_loss(
+        self,
+        chosen_input_ids: torch.Tensor,
+        chosen_labels: torch.Tensor,
+        rejected_input_ids: torch.Tensor,
+        rejected_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.reference_model is None:
+            raise RuntimeError("reference model is not loaded")
+        policy_chosen_logps = sequence_logprobs(self.model(chosen_input_ids).logits, chosen_labels)
+        policy_rejected_logps = sequence_logprobs(self.model(rejected_input_ids).logits, rejected_labels)
+        with torch.no_grad():
+            reference_chosen_logps = sequence_logprobs(self.reference_model(chosen_input_ids).logits, chosen_labels)
+            reference_rejected_logps = sequence_logprobs(self.reference_model(rejected_input_ids).logits, rejected_labels)
+        return dpo_loss(
+            policy_chosen_logps,
+            policy_rejected_logps,
+            reference_chosen_logps,
+            reference_rejected_logps,
+            self.config.dpo,
+        ).loss
+
+    def _compute_reward_model_loss(
+        self,
+        chosen_input_ids: torch.Tensor,
+        chosen_labels: torch.Tensor,
+        rejected_input_ids: torch.Tensor,
+        rejected_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        chosen_scores = self.model(chosen_input_ids, chosen_labels).scores
+        rejected_scores = self.model(rejected_input_ids, rejected_labels).scores
+        return reward_model_loss(chosen_scores, rejected_scores).loss
+
+    def _compute_grpo_loss(
+        self,
+        prompt_input_ids: torch.Tensor,
+        prompt_lengths: torch.Tensor,
+        expected: list[str | None],
+    ) -> torch.Tensor:
+        if self.reference_model is None:
+            raise RuntimeError("reference model is not loaded")
+        rollout_input_ids, rollout_labels, rewards = self._build_grpo_rollouts(
+            prompt_input_ids,
+            prompt_lengths,
+            expected,
+        )
+        policy_logps = sequence_logprobs(self.model(rollout_input_ids).logits, rollout_labels)
+        with torch.no_grad():
+            reference_logps = sequence_logprobs(self.reference_model(rollout_input_ids).logits, rollout_labels)
+        reward_groups = rewards.view(prompt_input_ids.size(0), self.config.grpo.num_generations)
+        advantages = group_advantages(
+            reward_groups,
+            normalize=self.config.grpo.normalize_advantages,
+        ).reshape(-1)
+        return grpo_loss(
+            policy_logps,
+            policy_logps.detach(),
+            reference_logps,
+            advantages,
+            rewards,
+            self.config.grpo,
+        ).loss
+
+    def _compute_ppo_loss(
+        self,
+        prompt_input_ids: torch.Tensor,
+        prompt_lengths: torch.Tensor,
+        expected: list[str | None],
+    ) -> torch.Tensor:
+        if self.reference_model is None:
+            raise RuntimeError("reference model is not loaded")
+        cfg = self.config.ppo
+        (
+            rollout_input_ids,
+            rollout_labels,
+            old_logprobs,
+            reference_logprobs,
+            old_values,
+            score_rewards,
+        ) = self._build_ppo_rollouts(prompt_input_ids, prompt_lengths, expected)
+        response_mask = rollout_labels.ne(IGNORE_INDEX)
+        kl_rewards = -cfg.beta * (old_logprobs - reference_logprobs) * response_mask.to(dtype=old_logprobs.dtype)
+        rewards = score_rewards + kl_rewards
+        advantages, returns = compute_gae(
+            rewards,
+            old_values,
+            response_mask,
+            gamma=cfg.gamma,
+            gae_lambda=cfg.gae_lambda,
+        )
+        if cfg.normalize_advantages:
+            advantages = normalize_masked(advantages, response_mask)
+
+        policy_value_output = self.model(rollout_input_ids)
+        policy_logprobs = token_logprobs(policy_value_output.logits, rollout_labels)
+        entropy = token_entropy(policy_value_output.logits)
+        return ppo_loss(
+            policy_logprobs,
+            old_logprobs,
+            policy_value_output.values,
+            old_values,
+            returns,
+            advantages,
+            entropy,
+            response_mask,
+            cfg,
+        ).loss
+
+    def _build_ppo_rollouts(
+        self,
+        prompt_input_ids: torch.Tensor,
+        prompt_lengths: torch.Tensor,
+        expected: list[str | None],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        cfg = self.config.ppo.validated()
+        was_training = self.model.training
+        self.model.eval()
+        rollout_inputs: list[torch.Tensor] = []
+        rollout_labels: list[torch.Tensor] = []
+        reward_inputs: list[torch.Tensor] = []
+        reward_labels: list[torch.Tensor] = []
+        responses: list[str] = []
+        targets: list[str | None] = []
+        try:
+            for batch_index, target in enumerate(expected):
+                prompt_len = int(prompt_lengths[batch_index].item())
+                prompt = prompt_input_ids[batch_index, :prompt_len].unsqueeze(0)
+                for _ in range(cfg.num_rollouts):
+                    generated = self._raw_model().generate(
+                        prompt,
+                        max_new_tokens=cfg.max_new_tokens,
+                        temperature=cfg.temperature,
+                        top_k=cfg.top_k,
+                        top_p=cfg.top_p,
+                        eos_id=self.tokenizer.eos_id,
+                    )[0]
+                    response_ids = generated[prompt_len:]
+                    response = self.tokenizer.decode(response_ids.tolist())
+                    responses.append(response)
+                    targets.append(target)
+
+                    input_ids = generated[:-1]
+                    labels = generated[1:].clone()
+                    labels[: max(prompt_len - 1, 0)] = IGNORE_INDEX
+                    if input_ids.size(0) > self.model_cfg.context_length:
+                        input_ids = input_ids[-self.model_cfg.context_length :]
+                        labels = labels[-self.model_cfg.context_length :]
+                    rollout_inputs.append(input_ids)
+                    rollout_labels.append(labels)
+
+                    reward_input_ids = generated
+                    reward_label_ids = torch.full_like(generated, IGNORE_INDEX)
+                    reward_label_ids[prompt_len:] = generated[prompt_len:]
+                    if reward_input_ids.size(0) > self.model_cfg.context_length:
+                        reward_input_ids = reward_input_ids[-self.model_cfg.context_length :]
+                        reward_label_ids = reward_label_ids[-self.model_cfg.context_length :]
+                    reward_inputs.append(reward_input_ids)
+                    reward_labels.append(reward_label_ids)
+        finally:
+            if was_training:
+                self.model.train()
+
+        input_batch, label_batch = self._pad_rollout_pairs(rollout_inputs, rollout_labels)
+        reward_input_batch, reward_label_batch = self._pad_rollout_pairs(reward_inputs, reward_labels)
+
+        response_mask = label_batch.ne(IGNORE_INDEX)
+        score_reward_batch = torch.zeros_like(label_batch, dtype=torch.float32)
+        terminal_rewards = self._score_rollouts(reward_input_batch, reward_label_batch, responses, targets)
+        for index, reward in enumerate(terminal_rewards):
+            valid_positions = torch.nonzero(response_mask[index], as_tuple=False).flatten()
+            if valid_positions.numel() == 0:
+                raise RuntimeError("PPO rollout produced no trainable response tokens")
+            score_reward_batch[index, valid_positions[-1]] = reward
+
+        with torch.no_grad():
+            was_training = self.model.training
+            self.model.eval()
+            try:
+                policy_value_output = self.model(input_batch)
+                old_logprobs = token_logprobs(policy_value_output.logits, label_batch).float()
+                old_values = policy_value_output.values.float().masked_fill(~response_mask, 0.0)
+                reference_logprobs = token_logprobs(self.reference_model(input_batch).logits, label_batch).float()
+            finally:
+                if was_training:
+                    self.model.train()
+        return input_batch, label_batch, old_logprobs, reference_logprobs, old_values, score_reward_batch
+
+    def _build_grpo_rollouts(
+        self,
+        prompt_input_ids: torch.Tensor,
+        prompt_lengths: torch.Tensor,
+        expected: list[str | None],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        cfg = self.config.grpo.validated()
+        was_training = self.model.training
+        self.model.eval()
+        rollout_inputs: list[torch.Tensor] = []
+        rollout_labels: list[torch.Tensor] = []
+        reward_inputs: list[torch.Tensor] = []
+        reward_labels: list[torch.Tensor] = []
+        responses: list[str] = []
+        targets: list[str | None] = []
+        try:
+            for batch_index, target in enumerate(expected):
+                prompt_len = int(prompt_lengths[batch_index].item())
+                prompt = prompt_input_ids[batch_index, :prompt_len].unsqueeze(0)
+                for _ in range(cfg.num_generations):
+                    generated = self._raw_model().generate(
+                        prompt,
+                        max_new_tokens=cfg.max_new_tokens,
+                        temperature=cfg.temperature,
+                        top_k=cfg.top_k,
+                        top_p=cfg.top_p,
+                        eos_id=self.tokenizer.eos_id,
+                    )[0]
+                    response_ids = generated[prompt_len:]
+                    response = self.tokenizer.decode(response_ids.tolist())
+                    responses.append(response)
+                    targets.append(target)
+
+                    input_ids = generated[:-1]
+                    labels = generated[1:].clone()
+                    labels[: max(prompt_len - 1, 0)] = IGNORE_INDEX
+                    if input_ids.size(0) > self.model_cfg.context_length:
+                        input_ids = input_ids[-self.model_cfg.context_length :]
+                        labels = labels[-self.model_cfg.context_length :]
+                    rollout_inputs.append(input_ids)
+                    rollout_labels.append(labels)
+
+                    reward_input_ids = generated
+                    reward_label_ids = torch.full_like(generated, IGNORE_INDEX)
+                    reward_label_ids[prompt_len:] = generated[prompt_len:]
+                    if reward_input_ids.size(0) > self.model_cfg.context_length:
+                        reward_input_ids = reward_input_ids[-self.model_cfg.context_length :]
+                        reward_label_ids = reward_label_ids[-self.model_cfg.context_length :]
+                    reward_inputs.append(reward_input_ids)
+                    reward_labels.append(reward_label_ids)
+        finally:
+            if was_training:
+                self.model.train()
+
+        input_batch, label_batch = self._pad_rollout_pairs(rollout_inputs, rollout_labels)
+        reward_input_batch, reward_label_batch = self._pad_rollout_pairs(reward_inputs, reward_labels)
+        reward_tensor = self._score_rollouts(reward_input_batch, reward_label_batch, responses, targets)
+        return input_batch, label_batch, reward_tensor
+
+    def _pad_rollout_pairs(
+        self,
+        inputs: list[torch.Tensor],
+        labels: list[torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        max_len = max(input_ids.size(0) for input_ids in inputs)
+        input_batch = torch.full(
+            (len(inputs), max_len),
+            self.tokenizer.pad_id,
+            dtype=torch.long,
+            device=self.device,
+        )
+        label_batch = torch.full(
+            (len(labels), max_len),
+            IGNORE_INDEX,
+            dtype=torch.long,
+            device=self.device,
+        )
+        for index, (input_ids, label_ids) in enumerate(zip(inputs, labels, strict=True)):
+            input_batch[index, : input_ids.size(0)] = input_ids
+            label_batch[index, : label_ids.size(0)] = label_ids
+        return input_batch, label_batch
+
+    def _score_rollouts(
+        self,
+        input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        responses: list[str],
+        targets: list[str | None],
+    ) -> torch.Tensor:
+        if self.reward_scorer is None:
+            raise RuntimeError("reward scorer is not initialized")
+        rewards = self.reward_scorer.score(input_ids, labels, responses=responses, targets=targets)
+        return rewards.to(device=self.device, dtype=torch.float32)
+
+    def _move_batch_to_device(self, batch: tuple[Any, ...]) -> tuple[Any, ...]:
+        return tuple(self._move_item_to_device(item) for item in batch)
+
+    def _move_item_to_device(self, item: Any) -> Any:
+        if isinstance(item, torch.Tensor):
+            return item.to(self.device, non_blocking=True)
+        if isinstance(item, tuple):
+            return tuple(self._move_item_to_device(value) for value in item)
+        if isinstance(item, list):
+            return item
+        return item
+
+    def _load_reference_model(self, checkpoint: str) -> AnilaLM:
+        payload = torch.load(checkpoint, map_location="cpu")
+        if "model" not in payload:
+            raise ValueError(f"Reference checkpoint does not contain model weights: {checkpoint}")
+        reference = AnilaLM(self.model_cfg)
+        lora_config = payload.get("lora_config")
+        if isinstance(lora_config, dict) and lora_config.get("enabled", False):
+            apply_lora(reference, LoRAConfig(**lora_config).validated())
+        state_dict = payload["model"]
+        missing, unexpected = reference.load_state_dict(state_dict, strict=False)
+        if missing or unexpected:
+            raise RuntimeError(
+                "Reference checkpoint is not compatible with the current model "
+                f"(missing={missing}, unexpected={unexpected})"
+            )
+        reference.to(self.device).eval()
+        for param in reference.parameters():
+            param.requires_grad = False
+        return reference
+
+    def _runtime_model(self) -> torch.nn.Module:
         return getattr(self.model, "_orig_mod", self.model)
+
+    def _value_model(self) -> PolicyValueModel:
+        model = self._runtime_model()
+        if not isinstance(model, PolicyValueModel):
+            raise RuntimeError("policy-value model is not initialized")
+        return model
+
+    def _reward_model(self) -> RewardModel:
+        model = self._runtime_model()
+        if not isinstance(model, RewardModel):
+            raise RuntimeError("reward model is not initialized")
+        return model
+
+    def _raw_model(self) -> AnilaLM:
+        model = self._runtime_model()
+        if isinstance(model, PolicyValueModel):
+            return model.policy
+        if isinstance(model, RewardModel):
+            return model.backbone
+        return model
 
 
 def train(config: RunConfig) -> None:

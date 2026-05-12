@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from anila.checkpoint import inspect_checkpoint
 from anila.config import load_run_config
 from anila.sampling import sample_text
 from anila.tokenization import train_byte_bpe
@@ -56,6 +58,14 @@ def sample(
         device=device,
     )
     typer.echo(text)
+
+
+@app.command("inspect-checkpoint")
+def inspect_checkpoint_command(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
+) -> None:
+    """Print a JSON summary of a native Anila checkpoint."""
+    typer.echo(json.dumps(inspect_checkpoint(checkpoint), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

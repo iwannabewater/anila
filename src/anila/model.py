@@ -14,6 +14,7 @@ from anila.config import ModelConfig
 class CausalLMOutput:
     logits: torch.Tensor
     loss: torch.Tensor | None = None
+    hidden_states: torch.Tensor | None = None
 
 
 class RMSNorm(nn.Module):
@@ -142,7 +143,13 @@ class AnilaLM(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, input_ids: torch.Tensor, targets: torch.Tensor | None = None) -> CausalLMOutput:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        *,
+        return_hidden_states: bool = False,
+    ) -> CausalLMOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, seq]")
         if input_ids.size(1) > self.config.context_length:
@@ -152,11 +159,12 @@ class AnilaLM(nn.Module):
         x = self.drop(self.embed(input_ids))
         for block in self.blocks:
             x = block(x, self.rope_cos, self.rope_sin)
-        logits = self.lm_head(self.norm(x))
+        hidden_states = self.norm(x)
+        logits = self.lm_head(hidden_states)
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1))
-        return CausalLMOutput(logits=logits, loss=loss)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
+        return CausalLMOutput(logits=logits, loss=loss, hidden_states=hidden_states if return_hidden_states else None)
 
     @torch.inference_mode()
     def generate(

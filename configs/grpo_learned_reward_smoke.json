@@ -1,0 +1,42 @@
+{
+  "model": {
+    "context_length": 128,
+    "n_layer": 2,
+    "n_head": 4,
+    "n_kv_head": 2,
+    "n_embd": 128,
+    "dropout": 0.0
+  },
+  "train": {
+    "objective": "grpo",
+    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
+    "dataset_path": "examples/tiny_reward_prompts.jsonl",
+    "tokenizer_path": "runs/tokenizer",
+    "out_dir": "runs/grpo-learned-reward-smoke",
+    "batch_size": 1,
+    "max_steps": 10,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.1,
+    "warmup_steps": 2,
+    "eval_interval": 5,
+    "save_interval": 5,
+    "log_interval": 5,
+    "device": "auto",
+    "dtype": "auto",
+    "compile": false
+  },
+  "grpo": {
+    "beta": 0.02,
+    "num_generations": 4,
+    "max_new_tokens": 24,
+    "temperature": 0.8,
+    "top_k": 50,
+    "top_p": 1.0,
+    "clip_range": 0.2,
+    "normalize_advantages": true
+  },
+  "reward": {
+    "scorer": "model",
+    "checkpoint": "runs/reward-model-smoke/checkpoints/latest.pt"
+  }
+}

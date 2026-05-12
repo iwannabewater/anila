@@ -1,0 +1,36 @@
+{
+  "model": {
+    "context_length": 128,
+    "n_layer": 2,
+    "n_head": 4,
+    "n_kv_head": 2,
+    "n_embd": 128,
+    "dropout": 0.0
+  },
+  "train": {
+    "objective": "distill",
+    "dataset_path": "examples/tiny_sft.jsonl",
+    "tokenizer_path": "runs/tokenizer",
+    "out_dir": "runs/distill-hard-sft-smoke",
+    "batch_size": 2,
+    "max_steps": 10,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.1,
+    "warmup_steps": 2,
+    "eval_interval": 5,
+    "save_interval": 5,
+    "log_interval": 5,
+    "device": "auto",
+    "dtype": "auto",
+    "compile": false
+  },
+  "distill": {
+    "mode": "hard",
+    "data_objective": "sft",
+    "ce_weight": 1.0,
+    "kl_weight": 0.0
+  },
+  "sft": {
+    "format": "auto"
+  }
+}

@@ -1,0 +1,3 @@
+{"system": "You are a concise assistant.", "prompt": "What does Anila train?", "response": "Anila trains small causal language models from text."}
+{"prompt": "How does Anila save progress?", "response": "It writes step checkpoints and a latest checkpoint with atomic replacement."}
+{"messages": [{"role": "system", "content": "You answer briefly."}, {"role": "user", "content": "What is SFT?"}, {"role": "assistant", "content": "SFT trains on supervised prompt and response examples."}]}

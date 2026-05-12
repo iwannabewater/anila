@@ -1,27 +1,35 @@
 {
   "model": {
     "context_length": 64,
-    "n_layer": 2,
+    "n_layer": 1,
     "n_head": 4,
     "n_kv_head": 2,
     "n_embd": 128,
     "dropout": 0.0
   },
   "train": {
-    "objective": "pretrain",
+    "objective": "distill",
     "dataset_path": "examples/tiny_corpus.txt",
     "tokenizer_path": "runs/tokenizer",
-    "out_dir": "runs/smoke",
-    "batch_size": 8,
-    "max_steps": 20,
+    "out_dir": "runs/distill-soft-smoke",
+    "batch_size": 4,
+    "max_steps": 10,
     "learning_rate": 0.0006,
     "weight_decay": 0.1,
     "warmup_steps": 2,
-    "eval_interval": 10,
-    "save_interval": 10,
+    "eval_interval": 5,
+    "save_interval": 5,
     "log_interval": 5,
     "device": "auto",
     "dtype": "auto",
     "compile": false
+  },
+  "distill": {
+    "mode": "soft",
+    "data_objective": "pretrain",
+    "teacher_checkpoint": "runs/smoke/checkpoints/latest.pt",
+    "temperature": 2.0,
+    "kl_weight": 1.0,
+    "ce_weight": 0.5
   }
 }

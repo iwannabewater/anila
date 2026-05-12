@@ -7,6 +7,7 @@ import torch
 
 from anila.config import ModelConfig
 from anila.model import AnilaLM
+from anila.peft import apply_lora
 from anila.tokenization import AnilaTokenizer
 from anila.training import resolve_device
 
@@ -32,6 +33,11 @@ def sample_text(
     payload = torch.load(checkpoint, map_location="cpu")
     tokenizer = AnilaTokenizer.load(tokenizer_path)
     model = AnilaLM(_model_config_from_payload(payload))
+    lora_config = payload.get("lora_config")
+    if isinstance(lora_config, dict) and lora_config.get("enabled", False):
+        from anila.config import LoRAConfig
+
+        apply_lora(model, LoRAConfig(**lora_config).validated())
     model.load_state_dict(payload["model"])
     model.to(runtime_device).eval()
     ids = torch.tensor([tokenizer.encode(prompt, add_bos=True)], dtype=torch.long, device=runtime_device)
