@@ -21,10 +21,10 @@ uv run ruff check .
 uv run pytest
 ```
 
-Run the end-to-end smoke path before larger changes:
+Run the end-to-end quickstart path before larger changes:
 
 ```bash
-# Train the tiny tokenizer used by all smoke configs.
+# Train the tiny tokenizer used by all quickstart configs.
 uv run anila tokenizer train \
   --input examples/tiny_corpus.txt \
   --input examples/tiny_sft.jsonl \
@@ -33,39 +33,63 @@ uv run anila tokenizer train \
   --min-frequency 1
 
 # Build the base pretraining checkpoint.
-uv run anila model train --config configs/smoke.json
+uv run anila model train --config configs/quickstart/pretrain.json
 
 # Build SFT and LoRA checkpoints from the base path.
-uv run anila model train --config configs/sft-smoke.json
-uv run anila model train --config configs/lora-sft-smoke.json
+uv run anila model train --config configs/quickstart/sft.json
+uv run anila model train --config configs/quickstart/lora-sft.json
 
 # Exercise distillation, preference, reward, and online RL objectives.
-uv run anila model train --config configs/distill-hard-sft-smoke.json
-uv run anila model train --config configs/distill-soft-smoke.json
-uv run anila model train --config configs/dpo-smoke.json
-uv run anila model train --config configs/reward-model-smoke.json
-uv run anila model train --config configs/grpo-smoke.json
-uv run anila model train --config configs/ppo-smoke.json
-uv run anila model train --config configs/grpo-learned-reward-smoke.json
-uv run anila model train --config configs/ppo-learned-reward-smoke.json
+uv run anila model train --config configs/quickstart/distill-hard-sft.json
+uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
+uv run anila model train --config configs/quickstart/dpo.json
+uv run anila model train --config configs/quickstart/reward-model.json
+uv run anila model train --config configs/quickstart/grpo-rule-reward.json
+uv run anila model train --config configs/quickstart/ppo-rule-reward.json
+uv run anila model train --config configs/quickstart/grpo-learned-reward.json
+uv run anila model train --config configs/quickstart/ppo-learned-reward.json
 
 # Fold LoRA adapter weights into a plain native checkpoint.
 uv run anila checkpoint merge-lora \
-  --checkpoint runs/lora-sft-smoke/checkpoints/latest.pt \
-  --out runs/lora-sft-smoke/checkpoints/merged.pt
+  --checkpoint runs/quickstart/lora-sft/checkpoints/latest.pt \
+  --out runs/quickstart/lora-sft/checkpoints/merged.pt
 
 # Generate a quick continuation from the PPO checkpoint.
 uv run anila model generate \
-  --checkpoint runs/ppo-smoke/checkpoints/latest.pt \
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
 
 # Inspect checkpoint metadata as JSON.
 uv run anila checkpoint inspect \
-  --checkpoint runs/ppo-smoke/checkpoints/latest.pt
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt
+
+# Measure base language-model loss and perplexity.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/pretrain/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_corpus.txt \
+  --task lm \
+  --objective pretrain
+
+# Measure DPO-style policy preference accuracy.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_preferences.jsonl \
+  --task preference
+
+# Measure reward-model pairwise accuracy.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/reward-model/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_preferences.jsonl \
+  --task reward
 ```
 
 Each run writes `config.json` and `metrics.jsonl` under `train.out_dir`. These files are generated run artifacts, so they remain ignored with the rest of `runs/`.
+
+Quickstart configs are intentionally tiny, readable recipes under `configs/quickstart/`. Test-only end-to-end checks live under `tests/` and use integration-test naming.
 
 ## Runtime Flags
 

@@ -1,12 +1,22 @@
 # Changelog
 
+## v0.1.3 - 2026-05-12
+
+Evaluation and quickstart naming release.
+
+- Added `anila model evaluate` for language-model loss/perplexity, policy preference accuracy, and reward-model pairwise accuracy.
+- Moved runnable recipes into `configs/quickstart/` with explicit objective names such as `pretrain.json`, `sft.json`, and `ppo-rule-reward.json`.
+- Renamed end-to-end training tests to integration-test terminology.
+- Added coverage for the evaluation API/CLI and quickstart config loading.
+- Updated README, development notes, architecture docs, status, and release notes around the new naming and evaluation workflow.
+
 ## v0.1.2 - 2026-05-12
 
 Artifact and CLI maturity release.
 
 - Added LoRA checkpoint merge/export so adapter weights can be folded into a plain native full-model checkpoint.
 - Added canonical grouped CLI commands under `tokenizer`, `model`, and `checkpoint`, while retaining the previous flat commands as aliases.
-- Renamed smoke configs to hyphen-case for consistency with run output directories.
+- Renamed runnable configs to hyphen-case for consistency with run output directories.
 - Tightened train config validation for AdamW betas, worker counts, device strings, and output directories.
 - Reworked README quick start commands with purpose comments and updated release/status documentation.
 
@@ -28,4 +38,4 @@ Initial full-flow training release.
 - Added runtime controls for mixed precision, TF32, optional fused AdamW, optional activation checkpointing, gradient accumulation, clipping, cosine decay, resume, and atomic checkpointing.
 - Added run artifacts: `config.json`, `metrics.jsonl`, full checkpoints, and LoRA adapter-only checkpoints.
 - Added `anila inspect-checkpoint` for checkpoint summaries.
-- Added runnable smoke configs, tiny examples, documentation, CI-backed unit tests, and release status notes.
+- Added runnable quickstart configs, tiny examples, documentation, CI-backed unit tests, and release status notes.

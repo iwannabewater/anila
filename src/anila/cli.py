@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -8,6 +9,7 @@ import typer
 
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
+from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
 from anila.sampling import sample_text
 from anila.tokenization import train_byte_bpe
 from anila.training import train
@@ -20,6 +22,17 @@ checkpoint_app = typer.Typer(help="Checkpoint inspection and export commands.")
 app.add_typer(tokenizer_app, name="tokenizer")
 app.add_typer(model_app, name="model")
 app.add_typer(checkpoint_app, name="checkpoint")
+
+
+class EvaluationTask(StrEnum):
+    lm = "lm"
+    preference = "preference"
+    reward = "reward"
+
+
+class LanguageModelObjective(StrEnum):
+    pretrain = "pretrain"
+    sft = "sft"
 
 
 @tokenizer_app.command("train")
@@ -68,6 +81,51 @@ def sample(
         device=device,
     )
     typer.echo(text)
+
+
+@model_app.command("evaluate")
+def evaluate_model(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
+    tokenizer: Annotated[Path, typer.Option("--tokenizer", "-t", exists=True, readable=True)],
+    dataset: Annotated[Path, typer.Option("--dataset", "-d", exists=True, readable=True)],
+    task: Annotated[EvaluationTask, typer.Option("--task")] = EvaluationTask.lm,
+    objective: Annotated[LanguageModelObjective, typer.Option("--objective")] = LanguageModelObjective.pretrain,
+    batch_size: Annotated[int, typer.Option("--batch-size")] = 8,
+    max_batches: Annotated[int | None, typer.Option("--max-batches")] = None,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    """Evaluate a checkpoint and print JSON metrics."""
+    if task is EvaluationTask.lm:
+        metrics = evaluate_lm_checkpoint(
+            checkpoint=checkpoint,
+            tokenizer_path=tokenizer,
+            dataset_path=str(dataset),
+            objective=objective.value,
+            batch_size=batch_size,
+            max_batches=max_batches,
+            device=device,
+        )
+    elif task is EvaluationTask.preference:
+        metrics = evaluate_policy_preferences(
+            checkpoint=checkpoint,
+            tokenizer_path=tokenizer,
+            dataset_path=str(dataset),
+            batch_size=batch_size,
+            max_batches=max_batches,
+            device=device,
+        )
+    elif task is EvaluationTask.reward:
+        metrics = evaluate_reward_model(
+            checkpoint=checkpoint,
+            tokenizer_path=tokenizer,
+            dataset_path=str(dataset),
+            batch_size=batch_size,
+            max_batches=max_batches,
+            device=device,
+        )
+    else:
+        raise typer.BadParameter("task must be lm, preference, or reward", param_hint="--task")
+    typer.echo(json.dumps(metrics, indent=2, sort_keys=True))
 
 
 @checkpoint_app.command("inspect")

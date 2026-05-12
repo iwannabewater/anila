@@ -11,7 +11,7 @@
     "objective": "pretrain",
     "dataset_path": "examples/tiny_corpus.txt",
     "tokenizer_path": "runs/tokenizer",
-    "out_dir": "runs/smoke",
+    "out_dir": "runs/quickstart/pretrain",
     "batch_size": 8,
     "max_steps": 20,
     "learning_rate": 0.0006,

@@ -9,14 +9,13 @@
   },
   "train": {
     "objective": "sft",
-    "init_from": "runs/smoke/checkpoints/latest.pt",
     "dataset_path": "examples/tiny_sft.jsonl",
     "tokenizer_path": "runs/tokenizer",
-    "out_dir": "runs/lora-sft-smoke",
+    "out_dir": "runs/quickstart/sft",
     "batch_size": 2,
     "max_steps": 10,
-    "learning_rate": 0.001,
-    "weight_decay": 0.0,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.1,
     "warmup_steps": 2,
     "eval_interval": 5,
     "save_interval": 5,
@@ -24,16 +23,6 @@
     "device": "auto",
     "dtype": "auto",
     "compile": false
-  },
-  "lora": {
-    "enabled": true,
-    "rank": 4,
-    "alpha": 8.0,
-    "dropout": 0.0,
-    "target_modules": ["q_proj", "v_proj"],
-    "train_base": false,
-    "train_bias": false,
-    "save_adapter": true
   },
   "sft": {
     "format": "auto"

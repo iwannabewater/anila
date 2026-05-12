@@ -11,7 +11,7 @@
     "objective": "distill",
     "dataset_path": "examples/tiny_corpus.txt",
     "tokenizer_path": "runs/tokenizer",
-    "out_dir": "runs/distill-soft-smoke",
+    "out_dir": "runs/quickstart/distill-soft-pretrain",
     "batch_size": 4,
     "max_steps": 10,
     "learning_rate": 0.0006,
@@ -27,7 +27,7 @@
   "distill": {
     "mode": "soft",
     "data_objective": "pretrain",
-    "teacher_checkpoint": "runs/smoke/checkpoints/latest.pt",
+    "teacher_checkpoint": "runs/quickstart/pretrain/checkpoints/latest.pt",
     "temperature": 2.0,
     "kl_weight": 1.0,
     "ce_weight": 0.5

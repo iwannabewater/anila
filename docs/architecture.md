@@ -26,7 +26,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
                      AnilaLM / RewardModel
                              |
                              v
-                          sampler
+                    sampler / evaluator
 ```
 
 ## Module Responsibilities
@@ -42,6 +42,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `model`: implements the causal language model, optional activation checkpointing, KV-cache generation, and generation-time filtering.
 - `peft`: injects LoRA adapters into target linear modules, freezes non-adapter parameters, extracts adapter state, and merges adapters back into plain linear weights.
 - `training`: owns objective selection, device/dtype selection, TF32 runtime setup, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
+- `evaluation`: restores native checkpoints and reports held-out language-model, preference, and reward-model metrics.
 - `checkpoint`: exposes lightweight checkpoint inspection for CLI and tests.
 - `sampling`: restores checkpoints and exposes text generation.
 
@@ -63,12 +64,14 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `ppo` consumes prompt JSONL records, samples online responses, assigns terminal scorer rewards plus per-token reference KL penalties, trains a value head with GAE returns, and keeps base LM checkpoints sampleable.
 - LoRA can wrap selected projection modules before training. Full checkpoints include base and adapter weights; adapter-only checkpoints are saved separately when enabled.
 - LoRA checkpoints can be exported as merged full-model checkpoints. The export keeps the native checkpoint shape, clears active LoRA metadata, records `merged_lora_targets`, and leaves the resulting `model` state dict loadable by plain `AnilaLM`.
+- Evaluation restores the same native checkpoint payloads used by sampling/training, supports active LoRA checkpoints, and reports JSON metrics for `lm`, `preference`, and `reward` tasks.
 
 ## Extension Points
 
 - Move dataset adapters into a `datasets/` package if more formats arrive.
 - Add new model variants by keeping the `forward(input_ids, targets=None)` interface.
 - Add adapter-only load/apply commands if adapter artifacts start being distributed independently from full checkpoints.
+- Add richer evaluation suites once the current lightweight harness is stable on larger corpora and preference sets.
 - Add DPO variants only after the base DPO path has real-data coverage.
 - Add external reward backends only after native learned reward checkpoints have broader real-data coverage.
 - Add hidden-state distillation only after model variant contracts are stable.

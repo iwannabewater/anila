@@ -30,6 +30,27 @@ def test_load_run_config_rejects_unknown_keys(tmp_path: Path) -> None:
         load_run_config(path)
 
 
+def test_quickstart_configs_are_loadable() -> None:
+    config_dir = Path("configs/quickstart")
+    names = sorted(path.name for path in config_dir.glob("*.json"))
+
+    assert names == [
+        "distill-hard-sft.json",
+        "distill-soft-pretrain.json",
+        "dpo.json",
+        "grpo-learned-reward.json",
+        "grpo-rule-reward.json",
+        "lora-sft.json",
+        "ppo-learned-reward.json",
+        "ppo-rule-reward.json",
+        "pretrain.json",
+        "reward-model.json",
+        "sft.json",
+    ]
+    for path in config_dir.glob("*.json"):
+        assert load_run_config(path).train.out_dir.startswith("runs/quickstart/")
+
+
 def test_load_sft_run_config(tmp_path: Path) -> None:
     path = tmp_path / "sft.json"
     path.write_text(

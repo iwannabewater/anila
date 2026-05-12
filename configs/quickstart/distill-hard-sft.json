@@ -8,14 +8,13 @@
     "dropout": 0.0
   },
   "train": {
-    "objective": "reward_model",
-    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
-    "dataset_path": "examples/tiny_preferences.jsonl",
+    "objective": "distill",
+    "dataset_path": "examples/tiny_sft.jsonl",
     "tokenizer_path": "runs/tokenizer",
-    "out_dir": "runs/reward-model-smoke",
+    "out_dir": "runs/quickstart/distill-hard-sft",
     "batch_size": 2,
     "max_steps": 10,
-    "learning_rate": 0.0003,
+    "learning_rate": 0.0006,
     "weight_decay": 0.1,
     "warmup_steps": 2,
     "eval_interval": 5,
@@ -24,5 +23,14 @@
     "device": "auto",
     "dtype": "auto",
     "compile": false
+  },
+  "distill": {
+    "mode": "hard",
+    "data_objective": "sft",
+    "ce_weight": 1.0,
+    "kl_weight": 0.0
+  },
+  "sft": {
+    "format": "auto"
   }
 }

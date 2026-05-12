@@ -20,7 +20,7 @@ from anila.tokenization import train_byte_bpe
 from anila.training import Trainer, configure_optimizer
 
 
-def test_tiny_training_smoke(tmp_path: Path) -> None:
+def test_tiny_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(("anila learns from text\n" * 80), encoding="utf-8")
     tokenizer_dir = tmp_path / "tokenizer"
@@ -69,7 +69,7 @@ def test_configure_optimizer_accepts_fused_flag_on_cpu() -> None:
     assert isinstance(optimizer, torch.optim.AdamW)
 
 
-def test_tiny_sft_training_smoke(tmp_path: Path) -> None:
+def test_tiny_sft_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
         "User: What does Anila train?\nAssistant: Anila trains small causal language models.\n" * 20,
@@ -112,7 +112,7 @@ def test_tiny_sft_training_smoke(tmp_path: Path) -> None:
     assert payload["sft_config"]["format"] == "auto"
 
 
-def test_tiny_lora_sft_training_smoke(tmp_path: Path) -> None:
+def test_tiny_lora_sft_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
         "User: What does Anila train?\nAssistant: Anila trains small causal language models.\n" * 20,
@@ -193,7 +193,7 @@ def test_tiny_lora_sft_training_smoke(tmp_path: Path) -> None:
     assert isinstance(text, str)
 
 
-def test_tiny_soft_distillation_training_smoke(tmp_path: Path) -> None:
+def test_tiny_soft_distillation_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(("Anila distills teacher logits into a smaller student.\n" * 80), encoding="utf-8")
     tokenizer_dir = tmp_path / "tokenizer"
@@ -251,7 +251,7 @@ def test_tiny_soft_distillation_training_smoke(tmp_path: Path) -> None:
     assert payload["distill_config"]["data_objective"] == "pretrain"
 
 
-def test_tiny_dpo_training_smoke(tmp_path: Path) -> None:
+def test_tiny_dpo_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
         "User: What does Anila train?\nAssistant: Anila trains small causal language models.\n" * 80,
@@ -346,7 +346,7 @@ def test_dpo_requires_policy_initial_checkpoint(tmp_path: Path) -> None:
         Trainer(run)
 
 
-def test_tiny_reward_model_training_smoke(tmp_path: Path) -> None:
+def test_tiny_reward_model_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
         "User: What does Anila train?\nAssistant: Anila trains small causal language models.\n" * 40,
@@ -508,7 +508,7 @@ def test_grpo_and_ppo_can_use_learned_reward_scorer_with_prompt_only_data(tmp_pa
     assert ppo_payload["reward_config"]["scorer"] == "model"
 
 
-def test_tiny_grpo_training_smoke(tmp_path: Path) -> None:
+def test_tiny_grpo_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
         "User: What does Anila train?\nAssistant: Anila trains small causal language models.\n" * 80,
@@ -604,7 +604,7 @@ def test_grpo_requires_policy_initial_checkpoint(tmp_path: Path) -> None:
         Trainer(run)
 
 
-def test_tiny_ppo_training_smoke(tmp_path: Path) -> None:
+def test_tiny_ppo_training_integration(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
         "User: What does Anila train?\nAssistant: Anila trains small causal language models.\n" * 80,

@@ -8,11 +8,11 @@
     "dropout": 0.0
   },
   "train": {
-    "objective": "dpo",
-    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
+    "objective": "reward_model",
+    "init_from": "runs/quickstart/sft/checkpoints/latest.pt",
     "dataset_path": "examples/tiny_preferences.jsonl",
     "tokenizer_path": "runs/tokenizer",
-    "out_dir": "runs/dpo-smoke",
+    "out_dir": "runs/quickstart/reward-model",
     "batch_size": 2,
     "max_steps": 10,
     "learning_rate": 0.0003,
@@ -24,8 +24,5 @@
     "device": "auto",
     "dtype": "auto",
     "compile": false
-  },
-  "dpo": {
-    "beta": 0.1
   }
 }

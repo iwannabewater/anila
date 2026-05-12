@@ -11,14 +11,14 @@ The repository is intentionally small enough to study and modify, while still us
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - JSON/TOML run configs with strict validation and fail-fast errors.
-- Grouped CLI commands for tokenizer training, model training, generation, checkpoint inspection, and LoRA checkpoint merge/export.
-- Fast unit tests plus an end-to-end smoke test.
+- Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
+- Fast unit tests plus end-to-end integration coverage.
 
 ## Requirements
 
 - Python 3.11 or newer.
 - [uv](https://docs.astral.sh/uv/) for dependency and environment management.
-- CPU works for tests and smoke runs. CUDA is used automatically when available.
+- CPU works for tests and quickstart runs. CUDA is used automatically when available.
 
 ## Quick Start
 
@@ -35,45 +35,53 @@ uv run anila tokenizer train \
   --min-frequency 1
 
 # Run plain next-token pretraining.
-uv run anila model train --config configs/smoke.json
+uv run anila model train --config configs/quickstart/pretrain.json
 
 # Run response-masked supervised fine-tuning.
-uv run anila model train --config configs/sft-smoke.json
+uv run anila model train --config configs/quickstart/sft.json
 
 # Fine-tune LoRA adapters from the pretraining checkpoint.
-uv run anila model train --config configs/lora-sft-smoke.json
+uv run anila model train --config configs/quickstart/lora-sft.json
 
 # Train hard-label and soft-logit distillation runs.
-uv run anila model train --config configs/distill-hard-sft-smoke.json
-uv run anila model train --config configs/distill-soft-smoke.json
+uv run anila model train --config configs/quickstart/distill-hard-sft.json
+uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
 
-# Train preference, reward-model, and online RL smoke runs.
-uv run anila model train --config configs/dpo-smoke.json
-uv run anila model train --config configs/reward-model-smoke.json
-uv run anila model train --config configs/grpo-smoke.json
-uv run anila model train --config configs/ppo-smoke.json
-uv run anila model train --config configs/grpo-learned-reward-smoke.json
-uv run anila model train --config configs/ppo-learned-reward-smoke.json
+# Train preference, reward-model, and online RL quickstart runs.
+uv run anila model train --config configs/quickstart/dpo.json
+uv run anila model train --config configs/quickstart/reward-model.json
+uv run anila model train --config configs/quickstart/grpo-rule-reward.json
+uv run anila model train --config configs/quickstart/ppo-rule-reward.json
+uv run anila model train --config configs/quickstart/grpo-learned-reward.json
+uv run anila model train --config configs/quickstart/ppo-learned-reward.json
 
 # Export a LoRA checkpoint as a merged full-model checkpoint for plain inference.
 uv run anila checkpoint merge-lora \
-  --checkpoint runs/lora-sft-smoke/checkpoints/latest.pt \
-  --out runs/lora-sft-smoke/checkpoints/merged.pt
+  --checkpoint runs/quickstart/lora-sft/checkpoints/latest.pt \
+  --out runs/quickstart/lora-sft/checkpoints/merged.pt
 
 # Generate text from a checkpoint.
 uv run anila model generate \
-  --checkpoint runs/ppo-smoke/checkpoints/latest.pt \
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
 
 # Print a JSON checkpoint summary.
 uv run anila checkpoint inspect \
-  --checkpoint runs/ppo-smoke/checkpoints/latest.pt
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt
+
+# Measure pretraining loss/perplexity on a local evaluation file.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/pretrain/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_corpus.txt \
+  --task lm \
+  --objective pretrain
 ```
 
-The smoke config writes checkpoints under `runs/smoke/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
+The pretraining quickstart config writes checkpoints under `runs/quickstart/pretrain/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
 
-The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
+The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
 
 ## Quality Checks
 
@@ -97,12 +105,13 @@ src/anila/
   ppo.py           PPO value head and loss utilities
   reward.py        reward model and reward scorer adapters
   training.py      trainer, schedule, checkpointing, resume
+  evaluation.py    checkpoint evaluation metrics
   sampling.py      checkpoint loading and text generation
   cli.py           command-line interface
-configs/           runnable training configs
-examples/          tiny local corpus for smoke tests
+configs/           runnable training configs, including quickstart recipes
+examples/          tiny local corpus for quickstart and integration tests
 docs/              architecture and development notes
-tests/             fast unit and smoke tests
+tests/             fast unit and integration tests
 ```
 
 ## Configuration
@@ -119,7 +128,7 @@ Run configs live under `configs/` and contain these top-level sections:
 - `reward`: optional reward scorer and reward-model data settings.
 - `sft`: supervised fine-tuning record formatting settings.
 
-See `configs/smoke.json` for pretraining, `configs/sft-smoke.json` for full-model supervised fine-tuning, `configs/lora-sft-smoke.json` for LoRA SFT, `configs/distill-hard-sft-smoke.json` for hard distillation, `configs/distill-soft-smoke.json` for soft-logit distillation, `configs/dpo-smoke.json` for DPO, `configs/reward-model-smoke.json` for reward model training, `configs/grpo-smoke.json` and `configs/ppo-smoke.json` for rule-reward RL, and `configs/grpo-learned-reward-smoke.json` plus `configs/ppo-learned-reward-smoke.json` for learned-reward RL.
+See `configs/quickstart/pretrain.json` for pretraining, `configs/quickstart/sft.json` for full-model supervised fine-tuning, `configs/quickstart/lora-sft.json` for LoRA SFT, `configs/quickstart/distill-hard-sft.json` for hard distillation, `configs/quickstart/distill-soft-pretrain.json` for soft-logit distillation, `configs/quickstart/dpo.json` for DPO, `configs/quickstart/reward-model.json` for reward model training, `configs/quickstart/grpo-rule-reward.json` and `configs/quickstart/ppo-rule-reward.json` for rule-reward RL, and `configs/quickstart/grpo-learned-reward.json` plus `configs/quickstart/ppo-learned-reward.json` for learned-reward RL.
 
 Useful runtime flags in `train`:
 
@@ -151,6 +160,38 @@ or chat messages:
 {"messages": [{"role": "user", "content": "What is SFT?"}, {"role": "assistant", "content": "Supervised fine-tuning."}]}
 ```
 
+## Evaluation
+
+`anila model evaluate` restores a native checkpoint and prints JSON metrics. The current harness covers:
+
+- `--task lm`: token-weighted negative log-likelihood and perplexity for `--objective pretrain` or `--objective sft`.
+- `--task preference`: chosen-vs-rejected policy accuracy and mean log-probability margin on DPO-style records.
+- `--task reward`: chosen-vs-rejected reward-model accuracy and mean score margin.
+
+```bash
+# Measure pretraining loss/perplexity.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/pretrain/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_corpus.txt \
+  --task lm \
+  --objective pretrain
+
+# Measure policy preference accuracy.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_preferences.jsonl \
+  --task preference
+
+# Measure reward-model pairwise accuracy.
+uv run anila model evaluate \
+  --checkpoint runs/quickstart/reward-model/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --dataset examples/tiny_preferences.jsonl \
+  --task reward
+```
+
 ## LoRA
 
 LoRA is enabled through the optional `lora` config section. When `train_base` is false, Anila freezes the base model and trains only adapter weights. Full checkpoints remain directly sampleable, and adapter-only artifacts are also saved under `checkpoints/adapters/`.
@@ -159,7 +200,7 @@ LoRA is enabled through the optional `lora` config section. When `train_base` is
 {
   "train": {
     "objective": "sft",
-    "init_from": "runs/smoke/checkpoints/latest.pt"
+    "init_from": "runs/quickstart/pretrain/checkpoints/latest.pt"
   },
   "lora": {
     "enabled": true,
@@ -175,8 +216,8 @@ Adapter checkpoints can be folded into a plain full-model checkpoint:
 ```bash
 # Merge LoRA weights into base Linear weights and disable the lora_config flag.
 uv run anila checkpoint merge-lora \
-  --checkpoint runs/lora-sft-smoke/checkpoints/latest.pt \
-  --out runs/lora-sft-smoke/checkpoints/merged.pt
+  --checkpoint runs/quickstart/lora-sft/checkpoints/latest.pt \
+  --out runs/quickstart/lora-sft/checkpoints/merged.pt
 ```
 
 ## Distillation
@@ -198,7 +239,7 @@ Soft distillation loads a native Anila teacher checkpoint and matches its logits
   "distill": {
     "mode": "soft",
     "data_objective": "pretrain",
-    "teacher_checkpoint": "runs/smoke/checkpoints/latest.pt",
+    "teacher_checkpoint": "runs/quickstart/pretrain/checkpoints/latest.pt",
     "temperature": 2.0,
     "kl_weight": 1.0,
     "ce_weight": 0.5
@@ -214,7 +255,7 @@ DPO expects a policy initialized from a checkpoint and a frozen reference model.
 {
   "train": {
     "objective": "dpo",
-    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
+    "init_from": "runs/quickstart/sft/checkpoints/latest.pt",
     "dataset_path": "examples/tiny_preferences.jsonl"
   },
   "dpo": {
@@ -237,7 +278,7 @@ Reward model training uses the same prompt/chosen/rejected preference format as 
 {
   "train": {
     "objective": "reward_model",
-    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
+    "init_from": "runs/quickstart/sft/checkpoints/latest.pt",
     "dataset_path": "examples/tiny_preferences.jsonl"
   }
 }
@@ -249,7 +290,7 @@ GRPO and PPO can then load the reward checkpoint through the top-level `reward` 
 {
   "reward": {
     "scorer": "model",
-    "checkpoint": "runs/reward-model-smoke/checkpoints/latest.pt"
+    "checkpoint": "runs/quickstart/reward-model/checkpoints/latest.pt"
   }
 }
 ```
@@ -262,7 +303,7 @@ GRPO expects a policy initialized from a checkpoint and a frozen reference model
 {
   "train": {
     "objective": "grpo",
-    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
+    "init_from": "runs/quickstart/sft/checkpoints/latest.pt",
     "dataset_path": "examples/tiny_grpo_prompts.jsonl"
   },
   "grpo": {
@@ -289,7 +330,7 @@ PPO expects a policy initialized from a checkpoint and a frozen reference model.
 {
   "train": {
     "objective": "ppo",
-    "init_from": "runs/sft-smoke/checkpoints/latest.pt",
+    "init_from": "runs/quickstart/sft/checkpoints/latest.pt",
     "dataset_path": "examples/tiny_ppo_prompts.jsonl"
   },
   "ppo": {
