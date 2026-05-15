@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from anila.config import DataConfig, ModelConfig, RewardConfig, load_run_config
+from anila.config import DataConfig, ModelConfig, RewardConfig, TrainConfig, load_run_config
 
 
 def test_model_config_fills_kv_heads() -> None:
@@ -168,3 +168,17 @@ def test_train_optimizer_betas_must_be_valid(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="train.beta2"):
         load_run_config(path)
+
+
+def test_train_config_validates_checkpoint_retention() -> None:
+    cfg = TrainConfig(
+        dataset_path="train.txt",
+        tokenizer_path="tokenizer",
+        keep_last_checkpoints=2,
+    ).validated()
+    assert cfg.keep_last_checkpoints == 2
+
+    with pytest.raises(ValueError, match="keep_last_checkpoints"):
+        TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", keep_last_checkpoints=0).validated()
+    with pytest.raises(ValueError, match="keep_last_checkpoints"):
+        TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", keep_last_checkpoints=True).validated()

@@ -27,7 +27,12 @@ def sample_text(
     temperature: float = 0.8,
     top_k: int | None = 50,
     top_p: float = 1.0,
+    min_p: float = 0.0,
+    repetition_penalty: float = 1.0,
     device: str = "auto",
+    do_sample: bool = True,
+    seed: int | None = None,
+    return_full_text: bool = True,
 ) -> str:
     runtime_device = resolve_device(device)
     payload = torch.load(checkpoint, map_location="cpu")
@@ -40,6 +45,10 @@ def sample_text(
         apply_lora(model, LoRAConfig(**lora_config).validated())
     model.load_state_dict(payload["model"])
     model.to(runtime_device).eval()
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=runtime_device)
+        generator.manual_seed(seed)
     ids = torch.tensor([tokenizer.encode(prompt, add_bos=True)], dtype=torch.long, device=runtime_device)
     out = model.generate(
         ids,
@@ -47,6 +56,14 @@ def sample_text(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
+        min_p=min_p,
+        repetition_penalty=repetition_penalty,
         eos_id=tokenizer.eos_id,
+        do_sample=do_sample,
+        generator=generator,
     )
-    return tokenizer.decode(out[0].tolist())
+    generated_ids = out[0].tolist()
+    if return_full_text:
+        return tokenizer.decode(generated_ids)
+    prompt_len = ids.size(1)
+    return tokenizer.decode(generated_ids[prompt_len:])

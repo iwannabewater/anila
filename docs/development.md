@@ -100,12 +100,15 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 - `allow_tf32`: toggles CUDA TF32 matmul/cuDNN usage.
 - `gradient_checkpointing`: enables transformer block activation recomputation during backward.
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW outside CUDA.
+- `keep_last_checkpoints`: keeps only the most recent N numbered step checkpoints while preserving `latest.pt`.
 
 ## Inference Path
 
 `AnilaLM.generate` enables `use_cache=True` by default. The first sampling step pre-fills the cache with the active context window, later steps feed only the newest token, and the cache is rebuilt from the most recent context window when it would exceed `model.context_length`.
 
 The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment.
+
+The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, and `--full-text/--completion-only`.
 
 ## Checkpoint Contract
 

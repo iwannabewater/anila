@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from anila.config import ModelConfig
-from anila.model import AnilaLM
+from anila.model import AnilaLM, apply_repetition_penalty, filter_logits
 
 
 def test_model_forward_and_generate() -> None:
@@ -73,3 +73,53 @@ def test_model_rejects_cached_targets() -> None:
 
     with pytest.raises(ValueError, match="targets cannot be used with past_key_values"):
         model(x[:, 3:], targets=x[:, 3:], past_key_values=prefill.past_key_values)
+
+
+def test_generate_can_run_greedily_with_modern_filters() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    model = AnilaLM(cfg)
+    model.eval()
+    x = torch.randint(0, cfg.vocab_size, (2, 4))
+
+    generated = model.generate(
+        x,
+        max_new_tokens=3,
+        top_k=10,
+        top_p=0.9,
+        min_p=0.01,
+        repetition_penalty=1.1,
+        do_sample=False,
+    )
+
+    assert generated.shape == (2, 7)
+
+
+def test_filter_logits_supports_min_p_and_keeps_at_least_one_token() -> None:
+    logits = torch.tensor([[10.0, 0.0, 0.0]])
+
+    filtered = filter_logits(logits, top_k=None, top_p=1.0, min_p=0.5)
+
+    assert torch.isfinite(filtered[0, 0])
+    assert torch.isinf(filtered[0, 1:]).all()
+
+
+def test_repetition_penalty_penalizes_seen_tokens_by_score_sign() -> None:
+    logits = torch.tensor([[2.0, -2.0, 0.5]])
+    input_ids = torch.tensor([[0, 1, 1]])
+
+    adjusted = apply_repetition_penalty(logits, input_ids, penalty=2.0)
+
+    torch.testing.assert_close(adjusted, torch.tensor([[1.0, -4.0, 0.5]]))
+
+
+def test_generation_filter_validation() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    model = AnilaLM(cfg)
+    x = torch.randint(0, cfg.vocab_size, (1, 4))
+
+    with pytest.raises(ValueError, match="top_k"):
+        model.generate(x, max_new_tokens=1, top_k=0)
+    with pytest.raises(ValueError, match="min_p"):
+        model.generate(x, max_new_tokens=1, min_p=-0.1)
+    with pytest.raises(ValueError, match="repetition_penalty"):
+        model.generate(x, max_new_tokens=1, repetition_penalty=0.0)

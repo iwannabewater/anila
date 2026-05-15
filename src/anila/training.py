@@ -130,9 +130,15 @@ def _dataloader_is_empty(loader) -> bool:
 
 
 class CheckpointManager:
-    def __init__(self, out_dir: str | Path):
+    def __init__(self, out_dir: str | Path, *, keep_last: int | None = None):
+        if keep_last is not None:
+            if isinstance(keep_last, bool) or not isinstance(keep_last, int):
+                raise ValueError("keep_last must be a positive integer when provided")
+            if keep_last <= 0:
+                raise ValueError("keep_last must be positive when provided")
         self.root = Path(out_dir) / "checkpoints"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.keep_last = keep_last
 
     @property
     def latest_path(self) -> Path:
@@ -146,6 +152,7 @@ class CheckpointManager:
         step_path = self.root / f"step_{step:08d}.pt"
         self._atomic_save(payload, step_path)
         self._atomic_save(payload, self.latest_path)
+        self._prune_old_step_checkpoints(self.root)
         return step_path
 
     def save_adapter(self, payload: dict[str, Any], *, step: int) -> Path:
@@ -154,6 +161,7 @@ class CheckpointManager:
         step_path = adapter_root / f"step_{step:08d}.pt"
         self._atomic_save(payload, step_path)
         self._atomic_save(payload, self.latest_adapter_path)
+        self._prune_old_step_checkpoints(adapter_root)
         return step_path
 
     def load(self, path: str | Path | None = None) -> dict[str, Any]:
@@ -161,6 +169,13 @@ class CheckpointManager:
         if not load_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {load_path}")
         return torch.load(load_path, map_location="cpu")
+
+    def _prune_old_step_checkpoints(self, root: Path) -> None:
+        if self.keep_last is None:
+            return
+        step_paths = sorted(root.glob("step_*.pt"))
+        for stale_path in step_paths[: max(0, len(step_paths) - self.keep_last)]:
+            stale_path.unlink(missing_ok=True)
 
     @staticmethod
     def _atomic_save(payload: dict[str, Any], path: Path) -> None:
@@ -256,7 +271,7 @@ class Trainer:
         self.optimizer = configure_optimizer(self.model, self.train_cfg, self.device)
         self.recorder = RunRecorder(self.train_cfg.out_dir)
         self.recorder.write_config(self.config)
-        self.checkpoints = CheckpointManager(self.train_cfg.out_dir)
+        self.checkpoints = CheckpointManager(self.train_cfg.out_dir, keep_last=self.train_cfg.keep_last_checkpoints)
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.device.type == "cuda" and self.dtype == torch.float16)
         self.start_step = 0
         if self.train_cfg.resume:

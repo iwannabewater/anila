@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added greedy decoding, seeded sampling, min-p filtering, repetition penalty, and completion-only generation output controls.
+- Added CLI generation controls for `--sample/--greedy`, `--seed`, `--min-p`, `--repetition-penalty`, `--full-text/--completion-only`, and `--top-k 0` to disable top-k.
+- Added `train.keep_last_checkpoints` and checkpoint manager pruning for full and adapter step checkpoints.
+- Added tests for modern generation filters and checkpoint retention.
+
 ## v0.1.4 - 2026-05-12
 
 Pretraining data pipeline release.

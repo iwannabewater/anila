@@ -258,15 +258,25 @@ class AnilaLM(nn.Module):
         temperature: float = 0.8,
         top_k: int | None = 50,
         top_p: float = 1.0,
+        min_p: float = 0.0,
+        repetition_penalty: float = 1.0,
         eos_id: int | None = None,
         use_cache: bool = True,
+        do_sample: bool = True,
+        generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         if max_new_tokens < 0:
             raise ValueError("max_new_tokens cannot be negative")
         if temperature <= 0:
             raise ValueError("temperature must be positive")
+        if top_k is not None and top_k <= 0:
+            raise ValueError("top_k must be positive when provided")
         if not 0.0 < top_p <= 1.0:
             raise ValueError("top_p must be in (0, 1]")
+        if not 0.0 <= min_p <= 1.0:
+            raise ValueError("min_p must be in [0, 1]")
+        if repetition_penalty <= 0:
+            raise ValueError("repetition_penalty must be positive")
         past_key_values = None
         for _ in range(max_new_tokens):
             if use_cache and past_key_values is not None and past_key_values[0][0].size(-2) < self.config.context_length:
@@ -277,9 +287,14 @@ class AnilaLM(nn.Module):
             out = self(idx_cond, past_key_values=past_key_values, use_cache=use_cache)
             past_key_values = out.past_key_values
             logits = out.logits[:, -1, :] / temperature
-            logits = filter_logits(logits, top_k=top_k, top_p=top_p)
-            probs = F.softmax(logits, dim=-1)
-            next_id = torch.multinomial(probs, num_samples=1)
+            if repetition_penalty != 1.0:
+                logits = apply_repetition_penalty(logits, input_ids, penalty=repetition_penalty)
+            logits = filter_logits(logits, top_k=top_k, top_p=top_p, min_p=min_p)
+            if do_sample:
+                probs = F.softmax(logits, dim=-1)
+                next_id = torch.multinomial(probs, num_samples=1, generator=generator)
+            else:
+                next_id = torch.argmax(logits, dim=-1, keepdim=True)
             input_ids = torch.cat([input_ids, next_id], dim=1)
             if eos_id is not None and torch.all(next_id.eq(eos_id)):
                 break
@@ -292,7 +307,24 @@ class AnilaLM(nn.Module):
         return total
 
 
-def filter_logits(logits: torch.Tensor, *, top_k: int | None, top_p: float) -> torch.Tensor:
+def apply_repetition_penalty(logits: torch.Tensor, input_ids: torch.Tensor, *, penalty: float) -> torch.Tensor:
+    if logits.ndim != 2:
+        raise ValueError(f"logits must have shape [batch, vocab], got {tuple(logits.shape)}")
+    if input_ids.ndim != 2 or input_ids.size(0) != logits.size(0):
+        raise ValueError("input_ids must have shape [batch, seq] and share the logits batch size")
+    if penalty <= 0:
+        raise ValueError("penalty must be positive")
+    adjusted = logits.clone()
+    for batch_index in range(input_ids.size(0)):
+        seen = torch.unique(input_ids[batch_index])
+        seen_scores = adjusted[batch_index, seen]
+        adjusted[batch_index, seen] = torch.where(seen_scores < 0, seen_scores * penalty, seen_scores / penalty)
+    return adjusted
+
+
+def filter_logits(
+    logits: torch.Tensor, *, top_k: int | None, top_p: float, min_p: float = 0.0
+) -> torch.Tensor:
     if top_k is not None and top_k > 0:
         kth = torch.topk(logits, min(top_k, logits.size(-1))).values[:, -1]
         logits = logits.masked_fill(logits < kth[:, None], float("-inf"))
@@ -302,5 +334,13 @@ def filter_logits(logits: torch.Tensor, *, top_k: int | None, top_p: float) -> t
         remove = cumulative > top_p
         remove[:, 1:] = remove[:, :-1].clone()
         remove[:, 0] = False
-        logits = logits.masked_fill(remove.scatter(1, sorted_indices, remove), float("-inf"))
+        remove = torch.zeros_like(remove).scatter(1, sorted_indices, remove)
+        logits = logits.masked_fill(remove, float("-inf"))
+    if min_p > 0.0:
+        probs = F.softmax(logits, dim=-1)
+        threshold = probs.max(dim=-1, keepdim=True).values * min_p
+        remove = probs < threshold
+        max_indices = probs.argmax(dim=-1, keepdim=True)
+        remove.scatter_(1, max_indices, False)
+        logits = logits.masked_fill(remove, float("-inf"))
     return logits

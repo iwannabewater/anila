@@ -80,6 +80,7 @@ class TrainConfig:
     allow_tf32: bool = True
     gradient_checkpointing: bool = False
     fused_adamw: bool = False
+    keep_last_checkpoints: int | None = None
     resume: str | None = None
 
     def validated(self) -> TrainConfig:
@@ -127,6 +128,11 @@ class TrainConfig:
         for name in ("compile", "allow_tf32", "gradient_checkpointing", "fused_adamw"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"train.{name} must be a boolean")
+        if self.keep_last_checkpoints is not None:
+            if isinstance(self.keep_last_checkpoints, bool) or not isinstance(self.keep_last_checkpoints, int):
+                raise ValueError("train.keep_last_checkpoints must be a positive integer when provided")
+            if self.keep_last_checkpoints <= 0:
+                raise ValueError("train.keep_last_checkpoints must be positive when provided")
         return self
 
 

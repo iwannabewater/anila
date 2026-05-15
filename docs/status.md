@@ -2,6 +2,15 @@
 
 Generated: 2026-05-12
 
+## Unreleased
+
+Next iteration focus:
+
+- Added greedy decoding, seeded sampling, min-p filtering, and repetition penalty to the native generation path.
+- Added CLI controls for sampling-vs-greedy generation, completion-only output, and disabling top-k with `--top-k 0`.
+- Added `train.keep_last_checkpoints` for local checkpoint retention without changing the default archival behavior.
+- Added tests for generation filtering and checkpoint retention.
+
 ## Current Release
 
 `v0.1.4` establishes Anila as a compact full-flow language-model training library with cleaner release, artifact, evaluation, and data-input workflows:

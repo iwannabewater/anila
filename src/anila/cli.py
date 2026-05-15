@@ -65,20 +65,32 @@ def sample(
     prompt: Annotated[str, typer.Option("--prompt", "-p")],
     max_new_tokens: Annotated[int, typer.Option("--max-new-tokens")] = 80,
     temperature: Annotated[float, typer.Option("--temperature")] = 0.8,
-    top_k: Annotated[int, typer.Option("--top-k")] = 50,
+    top_k: Annotated[int, typer.Option("--top-k", help="Use 0 to disable top-k filtering.")] = 50,
     top_p: Annotated[float, typer.Option("--top-p")] = 1.0,
+    min_p: Annotated[float, typer.Option("--min-p")] = 0.0,
+    repetition_penalty: Annotated[float, typer.Option("--repetition-penalty")] = 1.0,
     device: Annotated[str, typer.Option("--device")] = "auto",
+    do_sample: Annotated[bool, typer.Option("--sample/--greedy")] = True,
+    seed: Annotated[int | None, typer.Option("--seed")] = None,
+    return_full_text: Annotated[bool, typer.Option("--full-text/--completion-only")] = True,
 ) -> None:
     """Generate text from a checkpoint."""
+    if top_k < 0:
+        raise typer.BadParameter("top_k must be non-negative; use 0 to disable top-k filtering", param_hint="--top-k")
     text = sample_text(
         checkpoint=checkpoint,
         tokenizer_path=tokenizer,
         prompt=prompt,
         max_new_tokens=max_new_tokens,
         temperature=temperature,
-        top_k=top_k,
+        top_k=None if top_k == 0 else top_k,
         top_p=top_p,
+        min_p=min_p,
+        repetition_penalty=repetition_penalty,
         device=device,
+        do_sample=do_sample,
+        seed=seed,
+        return_full_text=return_full_text,
     )
     typer.echo(text)
 
