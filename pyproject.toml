@@ -1,6 +1,6 @@
 [project]
 name = "anila"
-version = "0.1.4"
+version = "0.1.5"
 description = "A clean from-scratch language-model training repository."
 readme = "README.md"
 requires-python = ">=3.11"

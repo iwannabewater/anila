@@ -1,27 +1,18 @@
 # Project Status
 
-Generated: 2026-05-12
-
-## Unreleased
-
-Next iteration focus:
-
-- Added greedy decoding, seeded sampling, min-p filtering, and repetition penalty to the native generation path.
-- Added CLI controls for sampling-vs-greedy generation, completion-only output, and disabling top-k with `--top-k 0`.
-- Added `train.keep_last_checkpoints` for local checkpoint retention without changing the default archival behavior.
-- Added tests for generation filtering and checkpoint retention.
+Generated: 2026-05-15
 
 ## Current Release
 
-`v0.1.4` establishes Anila as a compact full-flow language-model training library with cleaner release, artifact, evaluation, and data-input workflows:
+`v0.1.5` establishes Anila as a compact full-flow language-model training library with stronger native generation controls and local checkpoint lifecycle hygiene:
 
-- Native GPT-style causal LM with RoPE, RMSNorm, SwiGLU, GQA, tied embeddings, and top-k/top-p sampling.
+- Native GPT-style causal LM with RoPE, RMSNorm, SwiGLU, GQA, tied embeddings, KV-cache generation, greedy decoding, seeded sampling, top-k/top-p/min-p filtering, and repetition penalty.
 - Training objectives: pretrain, SFT, LoRA SFT, hard/soft distillation, DPO, reward model, GRPO, and PPO.
 - Reward path: rule rewards and native learned reward scorer checkpoints.
-- Runtime controls: mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, gradient accumulation, gradient clipping, cosine decay, resume, run metrics, and atomic checkpoints.
+- Runtime controls: mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, gradient accumulation, gradient clipping, cosine decay, resume, run metrics, atomic checkpoints, and optional retention for numbered step checkpoints.
 - Tooling: strict JSON/TOML config validation, explicit quickstart configs, checkpoint inspection/evaluation CLI, unit tests, CI.
 - Data input: pretraining supports dense sliding windows, packed fixed-length blocks, and streaming local text files through `data.pretrain_mode`.
-- Native KV-cache generation is enabled by default in `AnilaLM.generate`.
+- CLI generation supports `--sample/--greedy`, `--seed`, `--top-k 0`, `--top-p`, `--min-p`, `--repetition-penalty`, and `--full-text/--completion-only`.
 - Cached prefill plus continuation logits are tested against the plain full forward path.
 - Cache rebuilding keeps generation bounded by `model.context_length` without complicating the training forward path.
 - LoRA checkpoints can now be exported as merged full-model checkpoints for plain native inference.
@@ -29,7 +20,7 @@ Next iteration focus:
 - `anila model evaluate` reports language-model loss/perplexity, policy preference accuracy, and reward-model pairwise accuracy.
 - Quickstart config filenames live under `configs/quickstart/` and use explicit objective names such as `pretrain.json`, `sft.json`, and `ppo-rule-reward.json`.
 - Integration tests use integration-test naming, keeping test vocabulary separate from user-facing run recipes.
-- Train config validation now rejects invalid AdamW betas, worker counts, device strings, and output directories before runtime setup.
+- Train config validation now rejects invalid AdamW betas, worker counts, device strings, output directories, and checkpoint retention counts before runtime setup.
 
 ## Non-Goals For This Release
 
@@ -41,8 +32,8 @@ Next iteration focus:
 
 ## Next Iteration Candidates
 
-1. Adapter-only load/apply commands if adapter artifacts start being distributed independently.
-2. safetensors/HF interop after native checkpoint semantics stay stable.
-3. Broader evaluation suites after tiny local diagnostics remain stable.
-4. Binary token cache generation if streaming raw text becomes the bottleneck.
-5. Distributed training after single-process objective coverage remains stable.
+1. Add a tiny beam-search implementation in the same native style.
+2. Add optional EMA weights for evaluation-only stabilization.
+3. Add lightweight benchmark/evaluation adapters without pulling in a heavy harness.
+4. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
+5. Consider optional RoPE scaling and sliding-window attention after the current cache and generation contracts remain stable.

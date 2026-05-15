@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.1.5 - 2026-05-15
+
+Generation controls and checkpoint retention release.
 
 - Added greedy decoding, seeded sampling, min-p filtering, repetition penalty, and completion-only generation output controls.
 - Added CLI generation controls for `--sample/--greedy`, `--seed`, `--min-p`, `--repetition-penalty`, `--full-text/--completion-only`, and `--top-k 0` to disable top-k.

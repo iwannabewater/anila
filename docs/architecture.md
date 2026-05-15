@@ -50,12 +50,12 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 
 - Configs fail before training starts when shapes, intervals, or unsupported dtypes are invalid.
 - Checkpoints are ordinary `torch.save` dictionaries with schema version, objective, model state, model config, train config, optional objective configs, tokenizer path, optimizer state, and completed step.
-- `latest.pt` and step checkpoints are written through a temporary file and atomically replaced.
+- `latest.pt` and step checkpoints are written through a temporary file and atomically replaced; `train.keep_last_checkpoints` can prune older numbered step checkpoints while preserving `latest.pt`.
 - `config.json` captures the validated run config and `metrics.jsonl` records train, eval, and checkpoint events under `train.out_dir`.
 - Tokenizer vocabulary size is loaded from the tokenizer artifact and becomes the model vocabulary at runtime.
 - Plain-text pretraining can use dense `sliding_window`, non-overlapping `packed`, or local-file `streaming` data modes.
-- `allow_tf32`, `gradient_checkpointing`, and `fused_adamw` are explicit train config flags so stability/performance behavior is visible in saved configs.
-- `AnilaLM.generate` uses a native KV cache by default and falls back to full-context recomputation whenever the context window must be rebased.
+- `allow_tf32`, `gradient_checkpointing`, `fused_adamw`, and `keep_last_checkpoints` are explicit train config flags so stability/performance/storage behavior is visible in saved configs.
+- `AnilaLM.generate` uses a native KV cache by default, supports sampling or greedy decoding, and falls back to full-context recomputation whenever the context window must be rebased.
 - `pretrain` consumes plain text and trains all next-token targets.
 - `sft` consumes JSONL records and sets non-assistant labels to `-100`, so prompt/user/system tokens do not contribute to loss.
 - `distill` can run hard-label distillation over pretraining or SFT data, or soft-logit distillation against a teacher checkpoint.
