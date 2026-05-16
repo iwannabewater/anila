@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.6 - 2026-05-16
+
+Native beam-search generation release.
+
+- Added deterministic native beam search to `AnilaLM.generate` through `num_beams` and `length_penalty`.
+- Added CLI generation flags for `--num-beams` and `--length-penalty`.
+- Added sampling and model tests covering beam-search generation and validation.
+- Updated README, architecture, development, status, and iteration notes for the new inference contract.
+
 ## v0.1.5 - 2026-05-15
 
 Generation controls and checkpoint retention release.

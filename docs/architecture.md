@@ -39,7 +39,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `grpo`: computes group-relative advantages and clipped GRPO loss with reference KL.
 - `ppo`: adds a value head wrapper, token-level rollout accounting, GAE, and clipped PPO policy/value loss.
 - `reward`: trains scalar reward models, loads learned reward scorer checkpoints, and keeps rule rewards behind the same scorer contract.
-- `model`: implements the causal language model, optional activation checkpointing, KV-cache generation, and generation-time filtering.
+- `model`: implements the causal language model, optional activation checkpointing, KV-cache generation, generation-time filtering, and native beam search.
 - `peft`: injects LoRA adapters into target linear modules, freezes non-adapter parameters, extracts adapter state, and merges adapters back into plain linear weights.
 - `training`: owns objective selection, device/dtype selection, TF32 runtime setup, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
 - `evaluation`: restores native checkpoints and reports held-out language-model, preference, and reward-model metrics.
@@ -55,7 +55,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - Tokenizer vocabulary size is loaded from the tokenizer artifact and becomes the model vocabulary at runtime.
 - Plain-text pretraining can use dense `sliding_window`, non-overlapping `packed`, or local-file `streaming` data modes.
 - `allow_tf32`, `gradient_checkpointing`, `fused_adamw`, and `keep_last_checkpoints` are explicit train config flags so stability/performance/storage behavior is visible in saved configs.
-- `AnilaLM.generate` uses a native KV cache by default, supports sampling or greedy decoding, and falls back to full-context recomputation whenever the context window must be rebased.
+- `AnilaLM.generate` uses a native KV cache by default for single-path generation, supports sampling, greedy decoding, and deterministic beam search, and falls back to full-context recomputation whenever the context window must be rebased.
 - `pretrain` consumes plain text and trains all next-token targets.
 - `sft` consumes JSONL records and sets non-assistant labels to `-100`, so prompt/user/system tokens do not contribute to loss.
 - `distill` can run hard-label distillation over pretraining or SFT data, or soft-logit distillation against a teacher checkpoint.

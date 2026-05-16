@@ -21,6 +21,13 @@ class CausalLMOutput:
     past_key_values: KVCache | None = None
 
 
+@dataclass
+class _Beam:
+    input_ids: torch.Tensor
+    score: float
+    ended: bool = False
+
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
@@ -260,6 +267,8 @@ class AnilaLM(nn.Module):
         top_p: float = 1.0,
         min_p: float = 0.0,
         repetition_penalty: float = 1.0,
+        num_beams: int = 1,
+        length_penalty: float = 1.0,
         eos_id: int | None = None,
         use_cache: bool = True,
         do_sample: bool = True,
@@ -277,6 +286,23 @@ class AnilaLM(nn.Module):
             raise ValueError("min_p must be in [0, 1]")
         if repetition_penalty <= 0:
             raise ValueError("repetition_penalty must be positive")
+        if isinstance(num_beams, bool) or not isinstance(num_beams, int) or num_beams <= 0:
+            raise ValueError("num_beams must be a positive integer")
+        if length_penalty < 0:
+            raise ValueError("length_penalty cannot be negative")
+        if num_beams > 1:
+            return self._generate_beam_search(
+                input_ids,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                min_p=min_p,
+                repetition_penalty=repetition_penalty,
+                num_beams=num_beams,
+                length_penalty=length_penalty,
+                eos_id=eos_id,
+            )
         past_key_values = None
         for _ in range(max_new_tokens):
             if use_cache and past_key_values is not None and past_key_values[0][0].size(-2) < self.config.context_length:
@@ -300,6 +326,59 @@ class AnilaLM(nn.Module):
                 break
         return input_ids
 
+    def _generate_beam_search(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_k: int | None,
+        top_p: float,
+        min_p: float,
+        repetition_penalty: float,
+        num_beams: int,
+        length_penalty: float,
+        eos_id: int | None,
+    ) -> torch.Tensor:
+        if input_ids.size(0) != 1:
+            raise ValueError("beam search currently supports batch_size=1")
+        if max_new_tokens == 0:
+            return input_ids
+        prompt_len = input_ids.size(1)
+        beams = [_Beam(input_ids=input_ids[0], score=0.0)]
+        for _ in range(max_new_tokens):
+            candidates: list[_Beam] = []
+            for beam in beams:
+                if beam.ended:
+                    candidates.append(beam)
+                    continue
+                idx_cond = beam.input_ids[-self.config.context_length :].unsqueeze(0)
+                logits = self(idx_cond).logits[:, -1, :] / temperature
+                if repetition_penalty != 1.0:
+                    logits = apply_repetition_penalty(logits, beam.input_ids.unsqueeze(0), penalty=repetition_penalty)
+                logits = filter_logits(logits, top_k=top_k, top_p=top_p, min_p=min_p)
+                log_probs = F.log_softmax(logits, dim=-1)
+                k = min(num_beams, log_probs.size(-1))
+                next_scores, next_ids = torch.topk(log_probs[0], k=k)
+                for next_score, next_id in zip(next_scores, next_ids, strict=True):
+                    token = next_id.view(1)
+                    candidates.append(
+                        _Beam(
+                            input_ids=torch.cat((beam.input_ids, token)),
+                            score=beam.score + float(next_score.item()),
+                            ended=eos_id is not None and int(next_id.item()) == eos_id,
+                        )
+                    )
+            beams = sorted(
+                candidates,
+                key=lambda beam: _normalized_beam_score(beam, prompt_len, length_penalty),
+                reverse=True,
+            )[:num_beams]
+            if all(beam.ended for beam in beams):
+                break
+        best = max(beams, key=lambda beam: _normalized_beam_score(beam, prompt_len, length_penalty))
+        return best.input_ids.unsqueeze(0)
+
     def num_parameters(self, *, non_embedding: bool = True) -> int:
         total = sum(p.numel() for p in self.parameters())
         if non_embedding and self.config.tie_embeddings:
@@ -320,6 +399,13 @@ def apply_repetition_penalty(logits: torch.Tensor, input_ids: torch.Tensor, *, p
         seen_scores = adjusted[batch_index, seen]
         adjusted[batch_index, seen] = torch.where(seen_scores < 0, seen_scores * penalty, seen_scores / penalty)
     return adjusted
+
+
+def _normalized_beam_score(beam: _Beam, prompt_len: int, length_penalty: float) -> float:
+    generated_len = max(int(beam.input_ids.numel()) - prompt_len, 1)
+    if length_penalty == 0:
+        return beam.score
+    return beam.score / (generated_len**length_penalty)
 
 
 def filter_logits(

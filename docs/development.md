@@ -60,6 +60,15 @@ uv run anila model generate \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
 
+# Generate a deterministic beam-search completion from the same checkpoint.
+uv run anila model generate \
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "Anila is" \
+  --num-beams 4 \
+  --length-penalty 0.7 \
+  --completion-only
+
 # Inspect checkpoint metadata as JSON.
 uv run anila checkpoint inspect \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt
@@ -108,7 +117,7 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 
 The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment.
 
-The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, and `--full-text/--completion-only`.
+The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, `--num-beams`, `--length-penalty`, and `--full-text/--completion-only`.
 
 ## Checkpoint Contract
 

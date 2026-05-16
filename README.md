@@ -7,7 +7,7 @@ The repository is intentionally small enough to study and modify, while still us
 ## Features
 
 - Byte-level BPE tokenizer training.
-- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, and top-k/top-p sampling.
+- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, top-k/top-p sampling, and native beam search.
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
@@ -44,16 +44,28 @@ uv run anila model train --config configs/quickstart/sft.json
 # Fine-tune LoRA adapters from the pretraining checkpoint.
 uv run anila model train --config configs/quickstart/lora-sft.json
 
-# Train hard-label and soft-logit distillation runs.
+# Train hard-label distillation on SFT-style data.
 uv run anila model train --config configs/quickstart/distill-hard-sft.json
+
+# Train soft-logit distillation from the pretraining checkpoint.
 uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
 
-# Train preference, reward-model, and online RL quickstart runs.
+# Train DPO preference optimization from the SFT checkpoint.
 uv run anila model train --config configs/quickstart/dpo.json
+
+# Train a scalar reward model from chosen/rejected preference records.
 uv run anila model train --config configs/quickstart/reward-model.json
+
+# Train GRPO with a built-in rule reward.
 uv run anila model train --config configs/quickstart/grpo-rule-reward.json
+
+# Train PPO with a built-in rule reward.
 uv run anila model train --config configs/quickstart/ppo-rule-reward.json
+
+# Train GRPO with the learned reward-model checkpoint.
 uv run anila model train --config configs/quickstart/grpo-learned-reward.json
+
+# Train PPO with the learned reward-model checkpoint.
 uv run anila model train --config configs/quickstart/ppo-learned-reward.json
 
 # Export a LoRA checkpoint as a merged full-model checkpoint for plain inference.
@@ -66,6 +78,15 @@ uv run anila model generate \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
+
+# Generate a deterministic beam-search continuation.
+uv run anila model generate \
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "Anila is" \
+  --num-beams 4 \
+  --length-penalty 0.7 \
+  --completion-only
 
 # Print a JSON checkpoint summary.
 uv run anila checkpoint inspect \
@@ -87,7 +108,10 @@ The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model 
 ## Quality Checks
 
 ```bash
+# Check import order, lint rules, and common bug patterns.
 uv run ruff check .
+
+# Run the unit and integration test suite.
 uv run pytest
 ```
 
@@ -139,7 +163,7 @@ Useful runtime flags in `train`:
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
 - `keep_last_checkpoints`: when set, keeps only the most recent N step checkpoints plus `latest.pt` to limit local disk growth.
 
-Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, and repetition-penalty controls.
+Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, and deterministic beam search through `num_beams`.
 
 ## Data Modes
 

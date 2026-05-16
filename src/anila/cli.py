@@ -69,6 +69,8 @@ def sample(
     top_p: Annotated[float, typer.Option("--top-p")] = 1.0,
     min_p: Annotated[float, typer.Option("--min-p")] = 0.0,
     repetition_penalty: Annotated[float, typer.Option("--repetition-penalty")] = 1.0,
+    num_beams: Annotated[int, typer.Option("--num-beams", help="Use values above 1 for deterministic beam search.")] = 1,
+    length_penalty: Annotated[float, typer.Option("--length-penalty")] = 1.0,
     device: Annotated[str, typer.Option("--device")] = "auto",
     do_sample: Annotated[bool, typer.Option("--sample/--greedy")] = True,
     seed: Annotated[int | None, typer.Option("--seed")] = None,
@@ -77,6 +79,10 @@ def sample(
     """Generate text from a checkpoint."""
     if top_k < 0:
         raise typer.BadParameter("top_k must be non-negative; use 0 to disable top-k filtering", param_hint="--top-k")
+    if num_beams <= 0:
+        raise typer.BadParameter("num_beams must be positive", param_hint="--num-beams")
+    if length_penalty < 0:
+        raise typer.BadParameter("length_penalty cannot be negative", param_hint="--length-penalty")
     text = sample_text(
         checkpoint=checkpoint,
         tokenizer_path=tokenizer,
@@ -87,6 +93,8 @@ def sample(
         top_p=top_p,
         min_p=min_p,
         repetition_penalty=repetition_penalty,
+        num_beams=num_beams,
+        length_penalty=length_penalty,
         device=device,
         do_sample=do_sample,
         seed=seed,

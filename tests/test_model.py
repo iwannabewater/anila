@@ -94,6 +94,35 @@ def test_generate_can_run_greedily_with_modern_filters() -> None:
     assert generated.shape == (2, 7)
 
 
+def test_generate_supports_beam_search_for_single_prompt() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    model = AnilaLM(cfg)
+    model.eval()
+    x = torch.randint(0, cfg.vocab_size, (1, 4))
+
+    generated = model.generate(
+        x,
+        max_new_tokens=3,
+        num_beams=3,
+        length_penalty=0.7,
+        top_k=10,
+        top_p=0.9,
+        min_p=0.01,
+        repetition_penalty=1.1,
+    )
+
+    assert generated.shape == (1, 7)
+
+
+def test_beam_search_rejects_batched_prompts() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    model = AnilaLM(cfg)
+    x = torch.randint(0, cfg.vocab_size, (2, 4))
+
+    with pytest.raises(ValueError, match="batch_size=1"):
+        model.generate(x, max_new_tokens=1, num_beams=2)
+
+
 def test_filter_logits_supports_min_p_and_keeps_at_least_one_token() -> None:
     logits = torch.tensor([[10.0, 0.0, 0.0]])
 
@@ -123,3 +152,7 @@ def test_generation_filter_validation() -> None:
         model.generate(x, max_new_tokens=1, min_p=-0.1)
     with pytest.raises(ValueError, match="repetition_penalty"):
         model.generate(x, max_new_tokens=1, repetition_penalty=0.0)
+    with pytest.raises(ValueError, match="num_beams"):
+        model.generate(x, max_new_tokens=1, num_beams=0)
+    with pytest.raises(ValueError, match="length_penalty"):
+        model.generate(x, max_new_tokens=1, length_penalty=-0.1)
