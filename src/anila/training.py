@@ -154,14 +154,77 @@ def configure_torch_runtime(cfg: TrainConfig, device: torch.device) -> None:
     torch.backends.cudnn.allow_tf32 = cfg.allow_tf32
 
 
-def cycle(loader) -> Iterator[tuple[Any, ...]]:
-    while True:
-        yielded = False
-        for batch in loader:
-            yielded = True
-            yield batch
-        if not yielded:
-            raise ValueError("Dataloader produced no batches; reduce batch_size or add data")
+class ResumableDataIterator(Iterator[tuple[Any, ...]]):
+    def __init__(
+        self,
+        loader,
+        generator: torch.Generator,
+        state: dict[str, Any] | None = None,
+    ):
+        self.loader = loader
+        self.generator = generator
+        self.epoch = 0
+        self.batches_in_epoch = 0
+        self.total_batches = 0
+        self.epoch_start_generator_state = generator.get_state().clone()
+        self._iterator: Iterator[tuple[Any, ...]] | None = None
+        if state is not None:
+            self.load_state_dict(state)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "epoch": self.epoch,
+            "batches_in_epoch": self.batches_in_epoch,
+            "total_batches": self.total_batches,
+            "epoch_start_generator_state": self.epoch_start_generator_state.clone(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state.get("schema_version") != 1:
+            raise ValueError("checkpoint data_state schema_version is invalid")
+        fields = (state.get("epoch"), state.get("batches_in_epoch"), state.get("total_batches"))
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in fields):
+            raise ValueError("checkpoint data_state counters are invalid")
+        generator_state = state.get("epoch_start_generator_state")
+        if not isinstance(generator_state, torch.Tensor):
+            raise ValueError("checkpoint data_state generator state is invalid")
+        try:
+            self.generator.set_state(generator_state)
+        except RuntimeError as exc:
+            raise ValueError("checkpoint data_state generator state is invalid") from exc
+        self.epoch = fields[0]
+        self.batches_in_epoch = fields[1]
+        self.total_batches = fields[2]
+        self.epoch_start_generator_state = generator_state.clone()
+        self._iterator = None
+
+    def __next__(self) -> tuple[Any, ...]:
+        if self._iterator is None:
+            self._open_current_epoch()
+        try:
+            batch = next(self._iterator)
+        except StopIteration:
+            self.epoch += 1
+            self.batches_in_epoch = 0
+            self.epoch_start_generator_state = self.generator.get_state().clone()
+            self._iterator = iter(self.loader)
+            try:
+                batch = next(self._iterator)
+            except StopIteration as exc:
+                raise ValueError("Dataloader produced no batches; reduce batch_size or add data") from exc
+        self.batches_in_epoch += 1
+        self.total_batches += 1
+        return batch
+
+    def _open_current_epoch(self) -> None:
+        self.generator.set_state(self.epoch_start_generator_state)
+        self._iterator = iter(self.loader)
+        for _ in range(self.batches_in_epoch):
+            try:
+                next(self._iterator)
+            except StopIteration as exc:
+                raise ValueError("checkpoint data_state is not compatible with the current dataloader") from exc
 
 
 def _dataloader_is_empty(loader) -> bool:
@@ -316,10 +379,12 @@ class Trainer:
         self.checkpoints = CheckpointManager(self.train_cfg.out_dir, keep_last=self.train_cfg.keep_last_checkpoints)
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.device.type == "cuda" and self.dtype == torch.float16)
         self.start_step = 0
+        self._resume_data_state: dict[str, Any] | None = None
         if self.train_cfg.resume:
             self._restore(self.train_cfg.resume)
 
         data_objective = self._data_objective()
+        self.train_data_generator = torch.Generator().manual_seed(self.train_cfg.seed)
         self.train_loader = create_dataloader(
             self.train_cfg.dataset_path,
             self.tokenizer,
@@ -335,6 +400,7 @@ class Trainer:
             shuffle=True,
             num_workers=self.train_cfg.num_workers,
             drop_last=data_objective == "pretrain",
+            generator=self.train_data_generator,
         )
         eval_path = self.train_cfg.val_dataset_path or self.train_cfg.dataset_path
         self.eval_loader = create_dataloader(
@@ -357,6 +423,13 @@ class Trainer:
             raise ValueError("Training dataloader is empty; reduce batch_size or add data")
         if _dataloader_is_empty(self.eval_loader):
             raise ValueError("Evaluation dataloader is empty; reduce batch_size or add validation data")
+        if self._resume_data_state is not None and self._resume_data_state.get("contract") != self._data_resume_contract():
+            raise ValueError("Resume checkpoint data contract does not match the current training data configuration")
+        self.train_iterator = ResumableDataIterator(
+            self.train_loader,
+            self.train_data_generator,
+            self._resume_data_state,
+        )
 
     def train(self) -> None:
         runtime_model = self._runtime_model()
@@ -366,7 +439,6 @@ class Trainer:
             f"trainable={format_parameter_count(trainable_parameter_count(runtime_model))}, "
             f"grad_ckpt={self.train_cfg.gradient_checkpointing}"
         )
-        iterator = cycle(self.train_loader)
         start_time = time.time()
         self.model.train()
         for step in range(self.start_step, self.train_cfg.max_steps):
@@ -377,7 +449,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
             for _ in range(self.train_cfg.grad_accum_steps):
-                batch = self._move_batch_to_device(next(iterator))
+                batch = self._move_batch_to_device(next(self.train_iterator))
                 with torch.autocast(
                     device_type=self.device.type,
                     dtype=self.dtype,
@@ -464,6 +536,10 @@ class Trainer:
             "step": step,
             "optimizer": self.optimizer.state_dict(),
             "rng_state": capture_rng_state(),
+            "data_state": {
+                **self.train_iterator.state_dict(),
+                "contract": self._data_resume_contract(),
+            },
         }
         path = self.checkpoints.save(payload, step=step)
         self.recorder.append(event="checkpoint", step=step, path=str(path))
@@ -481,6 +557,10 @@ class Trainer:
             self.optimizer.load_state_dict(payload["optimizer"])
         if "rng_state" in payload:
             restore_rng_state(payload["rng_state"])
+        data_state = payload.get("data_state")
+        if data_state is not None and not isinstance(data_state, dict):
+            raise ValueError("checkpoint data_state must be an object")
+        self._resume_data_state = data_state
         self.start_step = int(payload.get("step", 0))
 
     def _load_initial_weights(self, path: str) -> dict[str, Any]:
@@ -538,6 +618,22 @@ class Trainer:
         if self.train_cfg.objective in {"dpo", "grpo", "ppo", "reward_model"}:
             return self.train_cfg.objective
         return self.train_cfg.objective
+
+    def _data_resume_contract(self) -> dict[str, Any]:
+        return {
+            "objective": self.train_cfg.objective,
+            "dataset_path": self.train_cfg.dataset_path,
+            "batch_size": self.train_cfg.batch_size,
+            "grad_accum_steps": self.train_cfg.grad_accum_steps,
+            "num_workers": self.train_cfg.num_workers,
+            "context_length": self.model_cfg.context_length,
+            "data_config": asdict(self.config.data),
+            "sft_config": asdict(self.config.sft),
+            "dpo_config": asdict(self.config.dpo),
+            "grpo_config": asdict(self.config.grpo),
+            "ppo_config": asdict(self.config.ppo),
+            "reward_config": asdict(self.config.reward),
+        }
 
     def _compute_batch_loss(self, batch: tuple[Any, ...]) -> torch.Tensor:
         if self.train_cfg.objective == "dpo":

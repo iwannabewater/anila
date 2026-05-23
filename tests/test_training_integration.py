@@ -59,6 +59,7 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     assert payload["objective"] == "pretrain"
     assert payload["data_config"]["pretrain_mode"] == "packed"
     assert "rng_state" in payload
+    assert "data_state" in payload
     snapshot = json.loads(config_snapshot.read_text(encoding="utf-8"))
     assert snapshot["train"]["objective"] == "pretrain"
     assert snapshot["data"]["pretrain_mode"] == "packed"
@@ -67,6 +68,90 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     resumed = Trainer(replace(run, train=replace(run.train, resume=str(checkpoint), max_steps=3)))
     assert resumed.start_step == 2
     assert torch.equal(torch.get_rng_state(), payload["rng_state"]["torch"])
+
+    legacy_checkpoint = tmp_path / "legacy-without-data-state.pt"
+    legacy_payload = dict(payload)
+    legacy_payload.pop("data_state")
+    torch.save(legacy_payload, legacy_checkpoint)
+    legacy_resumed = Trainer(replace(run, train=replace(run.train, resume=str(legacy_checkpoint), max_steps=3)))
+    assert legacy_resumed.start_step == 2
+    next(legacy_resumed.train_iterator)
+
+
+def test_resume_replays_next_shuffled_batch_mid_epoch(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(
+        "\n".join(f"record {index}: distinct training tokens {chr(65 + index)}" for index in range(24)) + "\n",
+        encoding="utf-8",
+    )
+    tokenizer_dir = tmp_path / "tokenizer"
+    train_byte_bpe([corpus], tokenizer_dir, vocab_size=300, min_frequency=1)
+    run = RunConfig(
+        model=ModelConfig(vocab_size=300, context_length=8, n_layer=1, n_head=2, n_kv_head=1, n_embd=32, dropout=0.1),
+        train=TrainConfig(
+            dataset_path=str(corpus),
+            tokenizer_path=str(tokenizer_dir),
+            out_dir=str(tmp_path / "run"),
+            batch_size=2,
+            grad_accum_steps=2,
+            max_steps=2,
+            eval_interval=2,
+            save_interval=2,
+            log_interval=2,
+            device="cpu",
+            dtype="float32",
+        ),
+        data=DataConfig(pretrain_mode="packed"),
+    )
+    original = Trainer(run)
+    next(original.train_iterator)
+    next(original.train_iterator)
+    checkpoint = original.save(1)
+    expected = next(original.train_iterator)
+
+    resumed = Trainer(replace(run, train=replace(run.train, resume=str(checkpoint))))
+    actual = next(resumed.train_iterator)
+
+    for actual_tensor, expected_tensor in zip(actual, expected, strict=True):
+        torch.testing.assert_close(actual_tensor, expected_tensor)
+
+    with pytest.raises(ValueError, match="data contract"):
+        Trainer(replace(run, train=replace(run.train, resume=str(checkpoint), batch_size=1)))
+
+    boundary_run = replace(run, train=replace(run.train, out_dir=str(tmp_path / "boundary")))
+    boundary = Trainer(boundary_run)
+    for _ in range(len(boundary.train_loader)):
+        next(boundary.train_iterator)
+    boundary_checkpoint = boundary.save(1)
+    expected_after_epoch = next(boundary.train_iterator)
+    resumed_after_epoch = Trainer(
+        replace(boundary_run, train=replace(boundary_run.train, resume=str(boundary_checkpoint)))
+    )
+    actual_after_epoch = next(resumed_after_epoch.train_iterator)
+    for actual_tensor, expected_tensor in zip(actual_after_epoch, expected_after_epoch, strict=True):
+        torch.testing.assert_close(actual_tensor, expected_tensor)
+
+    continuous_run = replace(
+        run,
+        train=replace(run.train, out_dir=str(tmp_path / "continuous"), save_interval=1),
+    )
+    Trainer(continuous_run).train()
+    step_one = tmp_path / "continuous" / "checkpoints" / "step_00000001.pt"
+    expected_payload = load_checkpoint_payload(tmp_path / "continuous" / "checkpoints" / "latest.pt")
+
+    resumed_run = replace(
+        continuous_run,
+        train=replace(
+            continuous_run.train,
+            out_dir=str(tmp_path / "resumed"),
+            resume=str(step_one),
+        ),
+    )
+    Trainer(resumed_run).train()
+    actual_payload = load_checkpoint_payload(tmp_path / "resumed" / "checkpoints" / "latest.pt")
+
+    for key, expected_tensor in expected_payload["model"].items():
+        torch.testing.assert_close(actual_payload["model"][key], expected_tensor)
 
 
 def test_configure_optimizer_accepts_fused_flag_on_cpu() -> None:

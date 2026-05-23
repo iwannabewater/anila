@@ -7,7 +7,7 @@ Anila is a compact native PyTorch language-model training library. Keep the core
 ## Project Map
 
 - `src/anila/`: package code for model, data, objectives, runtime, artifacts, evaluation, and CLI.
-- `tests/`: unit and tiny end-to-end regression coverage.
+- `tests/`: unit and tiny end-to-end regression coverage; `tests/test_training_integration.py` owns end-to-end runtime/checkpoint contract verification.
 - `configs/quickstart/` and `examples/`: runnable local recipes and their tiny datasets.
 - `docs/`, `README.md`, and `CHANGELOG.md`: architecture, operating instructions, and released/unreleased behavior.
 
@@ -17,7 +17,7 @@ Anila is a compact native PyTorch language-model training library. Keep the core
 - `src/anila/data.py` and `src/anila/tokenization.py` treat training input as strict UTF-8. Do not silently drop invalid bytes.
 - `src/anila/model.py` owns generation semantics. In batched generation, a sequence that emits `eos_id` must remain terminal.
 - `src/anila/checkpoint.py` owns external checkpoint deserialization. Route library checkpoint reads through `load_checkpoint_payload`; do not add direct `torch.load` calls for user-supplied artifacts.
-- `src/anila/training.py` owns runtime state. Evaluation must not perturb training randomness, and saved RNG state must remain backward-compatible when loading older checkpoints without it.
+- `src/anila/training.py` owns runtime state. Evaluation must not perturb training randomness; new resume checkpoints must preserve built-in training-loader order; older checkpoints without runtime or data state must remain loadable.
 
 ## Change Rules
 

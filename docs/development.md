@@ -144,12 +144,13 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `step`: completed optimizer step.
 - `optimizer`: optimizer state dict.
 - `rng_state`: Python, NumPy, PyTorch, and available CUDA RNG states used to keep validation side-effect-free and continue stochastic streams on resume.
+- `data_state`: deterministic training-loader generator epoch, batch cursor, and data-shaping contract used to continue built-in loader order on resume.
 - `merged_lora_targets`: projection modules folded into base weights by `checkpoint merge-lora`, present only on merged exports.
 - `merged_from_checkpoint`: source checkpoint path for merged LoRA exports, present only on merged exports.
 
 `latest.pt` is written atomically and is safe to use for resume or sampling after a completed save from a trusted run. Library reads accept tensor/plain-data checkpoint payloads through PyTorch restricted weight loading, and checkpoints containing ordinary serialized Python objects are rejected. Do not treat checkpoint loading as a sandbox for arbitrary untrusted files.
 
-`rng_state` restores random streams on resume. It does not record a partially consumed dataloader iterator, so exact mid-epoch batch-order replay is outside the current single-process checkpoint contract.
+`rng_state` and `data_state` restore random streams and the next built-in training batch on resume, including saves taken within an epoch. Exact replay requires unchanged dataset files and data-shaping configuration; resume rejects a changed recorded data contract. Older checkpoints without `data_state` remain loadable but begin a new deterministic training-loader sequence.
 
 When LoRA is enabled, adapter-only checkpoints are also written under `checkpoints/adapters/`.
 

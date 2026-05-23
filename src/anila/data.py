@@ -446,6 +446,7 @@ def create_dataloader(
     shuffle: bool = True,
     num_workers: int = 0,
     drop_last: bool = True,
+    generator: torch.Generator | None = None,
 ) -> DataLoader:
     if objective == "pretrain":
         resolved_data_config = (data_config or DataConfig()).validated()
@@ -479,6 +480,7 @@ def create_dataloader(
         pin_memory=torch.cuda.is_available(),
         drop_last=drop_last,
         collate_fn=collate_fn,
+        generator=generator,
     )
 
 
