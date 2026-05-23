@@ -33,9 +33,7 @@ class TextTokenDataset(Dataset):
         self.config = (config or DataConfig()).validated()
         if self.config.pretrain_mode == "streaming":
             raise ValueError("Use StreamingTextTokenDataset when data.pretrain_mode is streaming")
-        text = "\n".join(
-            input_path.read_text(encoding="utf-8", errors="ignore") for input_path in normalize_paths(path)
-        )
+        text = "\n".join(input_path.read_text(encoding="utf-8") for input_path in normalize_paths(path))
         ids = tokenizer.encode(text, add_bos=True, add_eos=True)
         if len(ids) < context_length + 1:
             raise ValueError(
@@ -78,7 +76,7 @@ class StreamingTextTokenDataset(IterableDataset):
         buffer: list[int] = [self.tokenizer.bos_id]
         worker = get_worker_info()
         for input_path in _worker_paths(self.paths):
-            with input_path.open("r", encoding="utf-8", errors="ignore") as f:
+            with input_path.open("r", encoding="utf-8") as f:
                 for line in f:
                     buffer.extend(self.tokenizer.encode(line))
                     while len(buffer) >= self.context_length + 1:
@@ -111,7 +109,7 @@ class SupervisedFineTuneDataset(Dataset):
             raise ValueError("SFT dataset is empty")
 
     def _load_path(self, path: Path) -> None:
-        with path.open("r", encoding="utf-8", errors="ignore") as f:
+        with path.open("r", encoding="utf-8") as f:
             for line_number, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
@@ -250,7 +248,7 @@ class PreferenceDataset(Dataset):
             raise ValueError("preference dataset is empty")
 
     def _load_path(self, path: Path) -> None:
-        with path.open("r", encoding="utf-8", errors="ignore") as f:
+        with path.open("r", encoding="utf-8") as f:
             for line_number, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
@@ -372,7 +370,7 @@ class PromptRewardDataset(Dataset):
             raise ValueError("prompt reward dataset is empty")
 
     def _load_path(self, path: Path) -> None:
-        with path.open("r", encoding="utf-8", errors="ignore") as f:
+        with path.open("r", encoding="utf-8") as f:
             for line_number, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:

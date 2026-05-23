@@ -42,6 +42,15 @@ def test_pretrain_dataset_accepts_multiple_files(tmp_path: Path) -> None:
     assert x.shape == y.shape == (8,)
 
 
+def test_pretrain_dataset_rejects_invalid_utf8(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "invalid.txt"
+    data.write_bytes(b"enough valid bytes for decoding first\n\xff\n")
+
+    with pytest.raises(UnicodeDecodeError):
+        TextTokenDataset(data, tokenizer, context_length=8)
+
+
 def test_pretrain_dataset_supports_packed_blocks(tmp_path: Path) -> None:
     tokenizer = _tokenizer(tmp_path)
     data = tmp_path / "corpus.txt"
@@ -79,6 +88,16 @@ def test_streaming_pretrain_dataset_yields_fixed_length_blocks(tmp_path: Path) -
     x, y = next(iter(dataset))
 
     assert x.shape == y.shape == (8,)
+
+
+def test_streaming_pretrain_dataset_rejects_invalid_utf8(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "invalid.txt"
+    data.write_bytes(b"\xff\n")
+
+    dataset = StreamingTextTokenDataset(data, tokenizer, context_length=8)
+    with pytest.raises(UnicodeDecodeError):
+        next(iter(dataset))
 
 
 def test_streaming_pretrain_dataloader_batches_examples(tmp_path: Path) -> None:
@@ -150,6 +169,15 @@ def test_sft_dataset_masks_prompt_tokens(tmp_path: Path) -> None:
     assert labels[0].item() == IGNORE_INDEX
     assert any(label.item() != IGNORE_INDEX for label in labels)
     assert labels[-1].item() == tokenizer.eos_id
+
+
+def test_sft_dataset_rejects_invalid_utf8(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "invalid.jsonl"
+    data.write_bytes(b'\xff{"prompt": "Question", "response": "Answer"}\n')
+
+    with pytest.raises(UnicodeDecodeError):
+        SupervisedFineTuneDataset(data, tokenizer, context_length=64)
 
 
 def test_sft_dataloader_pads_inputs_and_masks_labels(tmp_path: Path) -> None:

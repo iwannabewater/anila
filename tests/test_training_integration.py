@@ -1,9 +1,11 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import torch
 
+from anila.checkpoint import load_checkpoint_payload
 from anila.config import (
     DataConfig,
     DistillConfig,
@@ -51,15 +53,20 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     assert checkpoint.exists()
     assert config_snapshot.exists()
     assert metrics.exists()
-    payload = torch.load(checkpoint, map_location="cpu")
+    payload = load_checkpoint_payload(checkpoint)
     metric_events = [json.loads(line)["event"] for line in metrics.read_text(encoding="utf-8").splitlines()]
     assert payload["schema_version"] == 1
     assert payload["objective"] == "pretrain"
     assert payload["data_config"]["pretrain_mode"] == "packed"
+    assert "rng_state" in payload
     snapshot = json.loads(config_snapshot.read_text(encoding="utf-8"))
     assert snapshot["train"]["objective"] == "pretrain"
     assert snapshot["data"]["pretrain_mode"] == "packed"
     assert {"train", "eval", "checkpoint"}.issubset(metric_events)
+
+    resumed = Trainer(replace(run, train=replace(run.train, resume=str(checkpoint), max_steps=3)))
+    assert resumed.start_step == 2
+    assert torch.equal(torch.get_rng_state(), payload["rng_state"]["torch"])
 
 
 def test_configure_optimizer_accepts_fused_flag_on_cpu() -> None:
@@ -483,7 +490,11 @@ def test_grpo_and_ppo_can_use_learned_reward_scorer_with_prompt_only_data(tmp_pa
         grpo=GRPOConfig(num_generations=2, max_new_tokens=2, temperature=1.0, top_k=20),
         reward=learned_reward,
     )
-    Trainer(grpo_run).train()
+    trainer = Trainer(grpo_run)
+    rng_state = torch.get_rng_state().clone()
+    trainer.evaluate()
+    assert torch.equal(torch.get_rng_state(), rng_state)
+    trainer.train()
 
     ppo_run = RunConfig(
         model=ModelConfig(vocab_size=300, context_length=96, n_layer=1, n_head=2, n_kv_head=1, n_embd=32),

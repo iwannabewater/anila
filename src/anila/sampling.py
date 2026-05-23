@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from anila.checkpoint import load_checkpoint_payload
 from anila.config import ModelConfig
 from anila.model import AnilaLM
 from anila.peft import apply_lora
@@ -37,7 +38,7 @@ def sample_text(
     return_full_text: bool = True,
 ) -> str:
     runtime_device = resolve_device(device)
-    payload = torch.load(checkpoint, map_location="cpu")
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     tokenizer = AnilaTokenizer.load(tokenizer_path)
     model = AnilaLM(_model_config_from_payload(payload))
     lora_config = payload.get("lora_config")

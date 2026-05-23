@@ -1,8 +1,10 @@
+from types import MethodType
+
 import pytest
 import torch
 
 from anila.config import ModelConfig
-from anila.model import AnilaLM, apply_repetition_penalty, filter_logits
+from anila.model import AnilaLM, CausalLMOutput, apply_repetition_penalty, filter_logits
 
 
 def test_model_forward_and_generate() -> None:
@@ -92,6 +94,30 @@ def test_generate_can_run_greedily_with_modern_filters() -> None:
     )
 
     assert generated.shape == (2, 7)
+
+
+def test_batched_generation_fills_finished_sequences_with_eos() -> None:
+    cfg = ModelConfig(vocab_size=16, context_length=8, n_layer=1, n_head=2, n_kv_head=1, n_embd=16).validated()
+    model = AnilaLM(cfg)
+    steps = iter((torch.tensor([1, 2]), torch.tensor([3, 1])))
+
+    def forward(_self, input_ids: torch.Tensor, **_kwargs) -> CausalLMOutput:
+        next_ids = next(steps)
+        logits = torch.full((2, input_ids.size(1), cfg.vocab_size), -1000.0)
+        logits[torch.arange(2), -1, next_ids] = 0.0
+        return CausalLMOutput(logits=logits)
+
+    model.forward = MethodType(forward, model)
+    generated = model.generate(
+        torch.tensor([[4], [5]]),
+        max_new_tokens=2,
+        top_k=None,
+        eos_id=1,
+        use_cache=False,
+        do_sample=False,
+    )
+
+    assert generated.tolist() == [[4, 1, 1], [5, 2, 1]]
 
 
 def test_generate_supports_beam_search_for_single_prompt() -> None:

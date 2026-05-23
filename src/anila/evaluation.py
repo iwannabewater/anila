@@ -9,6 +9,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from anila.checkpoint import load_checkpoint_payload
 from anila.config import DataConfig, DPOConfig, LoRAConfig, ModelConfig, RewardConfig, SFTConfig
 from anila.data import IGNORE_INDEX, create_dataloader
 from anila.dpo import sequence_logprobs
@@ -199,9 +200,7 @@ def evaluate_reward_model(
 
 
 def _load_policy_model(checkpoint: str | Path, device: torch.device) -> tuple[AnilaLM, dict[str, Any]]:
-    payload = torch.load(checkpoint, map_location="cpu")
-    if not isinstance(payload, dict) or "model" not in payload or "model_config" not in payload:
-        raise ValueError(f"Checkpoint is missing model payload: {checkpoint}")
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     model = AnilaLM(_model_config_from_payload(payload))
     lora_config = payload.get("lora_config")
     if isinstance(lora_config, dict) and lora_config.get("enabled", False):
@@ -212,9 +211,7 @@ def _load_policy_model(checkpoint: str | Path, device: torch.device) -> tuple[An
 
 
 def _load_reward_model(checkpoint: str | Path, device: torch.device) -> tuple[RewardModel, dict[str, Any]]:
-    payload = torch.load(checkpoint, map_location="cpu")
-    if not isinstance(payload, dict) or "model" not in payload or "model_config" not in payload:
-        raise ValueError(f"Checkpoint is missing model payload: {checkpoint}")
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     if payload.get("reward_head") is None:
         raise ValueError(f"Checkpoint does not contain a reward head: {checkpoint}")
     backbone = AnilaLM(_model_config_from_payload(payload))

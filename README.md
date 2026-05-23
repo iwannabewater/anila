@@ -2,16 +2,16 @@
 
 Anila is a compact, from-scratch language-model training repository built with PyTorch. It is designed to keep the important parts of a small LLM training pipeline visible: tokenizer training, data loading, model definition, optimization, checkpointing, and sampling.
 
-The repository is intentionally small enough to study and modify, while still using production-shaped engineering practices: typed configuration, explicit validation, atomic checkpoints, deterministic setup, fast tests, and uv-managed environments.
+The repository is intentionally small enough to study and modify, while still using production-shaped engineering practices: typed configuration, explicit validation, restricted checkpoint loading, atomic checkpoints, RNG-preserving evaluation, fast tests, and uv-managed environments.
 
 ## Features
 
 - Byte-level BPE tokenizer training.
 - GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, top-k/top-p sampling, and native beam search.
-- Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, validation, checkpointing, resume, and atomic saves.
+- Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, RNG-preserving validation, checkpointed random state, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
-- JSON/TOML run configs with strict validation, fail-fast errors, and optional checkpoint retention.
+- JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
 - Fast unit tests plus end-to-end integration coverage.
 
@@ -163,7 +163,7 @@ Useful runtime flags in `train`:
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
 - `keep_last_checkpoints`: when set, keeps only the most recent N step checkpoints plus `latest.pt` to limit local disk growth.
 
-Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, and deterministic beam search through `num_beams`.
+Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, and deterministic beam search through `num_beams`. In batched single-path generation, rows that emit `eos_id` remain terminal while unfinished rows continue.
 
 ## Data Modes
 
@@ -172,6 +172,8 @@ The `data` section controls how plain-text pretraining examples are produced:
 - `sliding_window`: the default. Builds dense overlapping next-token windows and supports `sequence_stride` when less overlap is desired.
 - `packed`: builds non-overlapping fixed-length blocks from a token stream, which is usually the practical default for larger local corpora.
 - `streaming`: reads local text files through an iterable dataset and emits packed blocks without materializing the whole corpus as one tensor.
+
+All tokenizer and dataset text inputs are decoded as strict UTF-8; malformed input fails before it can silently alter a training corpus.
 
 ```json
 {

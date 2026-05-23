@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from anila.checkpoint import load_checkpoint_payload
 from anila.config import DistillConfig, LoRAConfig, ModelConfig
 from anila.data import IGNORE_INDEX
 from anila.model import AnilaLM
@@ -51,9 +52,7 @@ def soft_distillation_loss(
 
 
 def load_teacher_model(checkpoint: str | Path, device: torch.device) -> AnilaLM:
-    payload = torch.load(checkpoint, map_location="cpu")
-    if "model" not in payload or "model_config" not in payload:
-        raise ValueError(f"Teacher checkpoint is missing model payload: {checkpoint}")
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     model = AnilaLM(_model_config_from_payload(payload))
     lora_config = payload.get("lora_config")
     if isinstance(lora_config, dict) and lora_config.get("enabled", False):

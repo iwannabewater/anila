@@ -1,14 +1,27 @@
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
 import torch
 from typer.testing import CliRunner
 
-from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
+from anila.checkpoint import inspect_checkpoint, load_checkpoint_payload, merge_lora_checkpoint
 from anila.cli import app
 from anila.config import DataConfig, LoRAConfig, ModelConfig, TrainConfig
 from anila.model import AnilaLM
 from anila.peft import LoRALinear, apply_lora
+
+
+class _UnsupportedCheckpointObject:
+    pass
+
+
+def test_load_checkpoint_payload_rejects_unsafe_objects(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "unsafe.pt"
+    torch.save({"unsupported": _UnsupportedCheckpointObject()}, checkpoint)
+
+    with pytest.raises(ValueError, match="loaded safely"):
+        load_checkpoint_payload(checkpoint)
 
 
 def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
@@ -102,7 +115,7 @@ def test_merge_lora_checkpoint_exports_plain_model(tmp_path: Path) -> None:
     )
 
     out = merge_lora_checkpoint(checkpoint, tmp_path / "merged.pt")
-    payload = torch.load(out, map_location="cpu")
+    payload = load_checkpoint_payload(out)
     merged = AnilaLM(cfg)
     merged.load_state_dict(payload["model"])
     merged.eval()

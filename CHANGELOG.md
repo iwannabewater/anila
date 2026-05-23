@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Reliability baseline.
+
+- Centralized checkpoint loading on PyTorch restricted weight deserialization, rejected object-bearing payloads, and raised the minimum PyTorch version to a patched `>=2.10`.
+- Saved and restored runtime RNG state, and isolated evaluation from subsequent training randomness.
+- Corrected batched generation so rows remain terminal after emitting EOS.
+- Rejected invalid UTF-8 training inputs and explicit zero grouped-query KV head configurations.
+- Added regression coverage and a contributor contract for checkpoint, data, generation, and verification boundaries.
+
 ## v0.1.6 - 2026-05-16
 
 Native beam-search generation release.

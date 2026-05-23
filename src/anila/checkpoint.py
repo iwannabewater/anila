@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 from dataclasses import asdict, fields, replace
 from pathlib import Path
 from typing import Any
@@ -11,10 +12,25 @@ from anila.model import AnilaLM
 from anila.peft import apply_lora, merge_lora
 
 
-def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
-    payload = torch.load(checkpoint, map_location="cpu")
+def load_checkpoint_payload(
+    checkpoint: str | Path,
+    *,
+    required_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    try:
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    except pickle.UnpicklingError as exc:
+        raise ValueError(f"Checkpoint cannot be loaded safely: {checkpoint}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"Checkpoint must contain a dictionary payload: {checkpoint}")
+    missing = [key for key in required_keys if key not in payload]
+    if missing:
+        raise ValueError(f"Checkpoint is missing required keys {missing}: {checkpoint}")
+    return payload
+
+
+def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
+    payload = load_checkpoint_payload(checkpoint)
 
     train_config = payload.get("train_config")
     data_config = payload.get("data_config")
@@ -59,11 +75,7 @@ def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
 
 
 def merge_lora_checkpoint(checkpoint: str | Path, out: str | Path) -> Path:
-    payload = torch.load(checkpoint, map_location="cpu")
-    if not isinstance(payload, dict):
-        raise ValueError(f"Checkpoint must contain a dictionary payload: {checkpoint}")
-    if "model" not in payload or "model_config" not in payload:
-        raise ValueError(f"Checkpoint is missing model payload: {checkpoint}")
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
 
     lora_config = payload.get("lora_config")
     if not isinstance(lora_config, dict) or not lora_config.get("enabled", False):

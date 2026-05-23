@@ -33,7 +33,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 
 - `config`: parses JSON/TOML configs, applies defaults, and rejects unknown keys.
 - `tokenization`: trains and loads byte-level BPE tokenizers.
-- `data`: builds sliding-window, packed, or streaming next-token prediction examples from text corpora plus response-masked SFT examples from JSONL records.
+- `data`: strictly decodes UTF-8 input and builds sliding-window, packed, or streaming next-token prediction examples from text corpora plus response-masked SFT examples from JSONL records.
 - `distillation`: loads native teacher checkpoints and computes masked soft-logit distillation loss.
 - `dpo`: computes response sequence logprobs and Direct Preference Optimization loss.
 - `grpo`: computes group-relative advantages and clipped GRPO loss with reference KL.
@@ -43,19 +43,20 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `peft`: injects LoRA adapters into target linear modules, freezes non-adapter parameters, extracts adapter state, and merges adapters back into plain linear weights.
 - `training`: owns objective selection, device/dtype selection, TF32 runtime setup, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
 - `evaluation`: restores native checkpoints and reports held-out language-model, preference, and reward-model metrics.
-- `checkpoint`: exposes lightweight checkpoint inspection for CLI and tests.
+- `checkpoint`: enforces restricted checkpoint deserialization and exposes lightweight checkpoint inspection for CLI and tests.
 - `sampling`: restores checkpoints and exposes text generation.
 
 ## Runtime Contract
 
-- Configs fail before training starts when shapes, intervals, or unsupported dtypes are invalid.
-- Checkpoints are ordinary `torch.save` dictionaries with schema version, objective, model state, model config, train config, optional objective configs, tokenizer path, optimizer state, and completed step.
+- Configs and UTF-8 input files fail before training starts when values, encodings, shapes, intervals, or unsupported dtypes are invalid.
+- Checkpoints are ordinary tensor/plain-data `torch.save` dictionaries loaded through the restricted `weights_only=True` path on supported PyTorch versions, with schema version, objective, model state, model config, train config, optional objective configs, tokenizer path, optimizer state, completed step, and optional RNG state.
 - `latest.pt` and step checkpoints are written through a temporary file and atomically replaced; `train.keep_last_checkpoints` can prune older numbered step checkpoints while preserving `latest.pt`.
 - `config.json` captures the validated run config and `metrics.jsonl` records train, eval, and checkpoint events under `train.out_dir`.
 - Tokenizer vocabulary size is loaded from the tokenizer artifact and becomes the model vocabulary at runtime.
 - Plain-text pretraining can use dense `sliding_window`, non-overlapping `packed`, or local-file `streaming` data modes.
 - `allow_tf32`, `gradient_checkpointing`, `fused_adamw`, and `keep_last_checkpoints` are explicit train config flags so stability/performance/storage behavior is visible in saved configs.
-- `AnilaLM.generate` uses a native KV cache by default for single-path generation, supports sampling, greedy decoding, and deterministic beam search, and falls back to full-context recomputation whenever the context window must be rebased.
+- `AnilaLM.generate` uses a native KV cache by default for single-path generation, supports sampling, greedy decoding, and deterministic beam search, preserves terminal EOS rows in batches, and falls back to full-context recomputation whenever the context window must be rebased.
+- Evaluation snapshots and restores RNG state so validation, including rollout-based objectives, does not alter subsequent training sampling.
 - `pretrain` consumes plain text and trains all next-token targets.
 - `sft` consumes JSONL records and sets non-assistant labels to `-100`, so prompt/user/system tokens do not contribute to loss.
 - `distill` can run hard-label distillation over pretraining or SFT data, or soft-logit distillation against a teacher checkpoint.

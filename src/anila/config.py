@@ -27,7 +27,7 @@ class ModelConfig:
     tie_embeddings: bool = True
 
     def validated(self) -> ModelConfig:
-        n_kv_head = self.n_kv_head or self.n_head
+        n_kv_head = self.n_head if self.n_kv_head is None else self.n_kv_head
         cfg = replace(self, n_kv_head=n_kv_head)
         if cfg.vocab_size <= 0:
             raise ValueError("model.vocab_size must be positive")

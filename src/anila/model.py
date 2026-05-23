@@ -75,7 +75,9 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         config = config.validated()
         self.n_head = config.n_head
-        self.n_kv_head = config.n_kv_head or config.n_head
+        if config.n_kv_head is None:
+            raise RuntimeError("validated model config must define n_kv_head")
+        self.n_kv_head = config.n_kv_head
         self.head_dim = config.n_embd // config.n_head
         self.kv_repeat = self.n_head // self.n_kv_head
         self.q_proj = nn.Linear(config.n_embd, config.n_head * self.head_dim, bias=config.bias)
@@ -304,6 +306,7 @@ class AnilaLM(nn.Module):
                 eos_id=eos_id,
             )
         past_key_values = None
+        finished = torch.zeros((input_ids.size(0), 1), dtype=torch.bool, device=input_ids.device)
         for _ in range(max_new_tokens):
             if use_cache and past_key_values is not None and past_key_values[0][0].size(-2) < self.config.context_length:
                 idx_cond = input_ids[:, -1:]
@@ -321,8 +324,11 @@ class AnilaLM(nn.Module):
                 next_id = torch.multinomial(probs, num_samples=1, generator=generator)
             else:
                 next_id = torch.argmax(logits, dim=-1, keepdim=True)
+            if eos_id is not None:
+                next_id = torch.where(finished, torch.full_like(next_id, eos_id), next_id)
+                finished = finished | next_id.eq(eos_id)
             input_ids = torch.cat([input_ids, next_id], dim=1)
-            if eos_id is not None and torch.all(next_id.eq(eos_id)):
+            if eos_id is not None and torch.all(finished):
                 break
         return input_ids
 

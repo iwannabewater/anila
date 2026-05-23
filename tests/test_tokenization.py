@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from anila.tokenization import AnilaTokenizer, train_byte_bpe
 
 
@@ -15,3 +17,11 @@ def test_train_save_load_tokenizer(tmp_path: Path) -> None:
 
     loaded = AnilaTokenizer.load(out_dir)
     assert loaded.decode(loaded.encode("anila")).strip() == "anila"
+
+
+def test_train_tokenizer_rejects_invalid_utf8(tmp_path: Path) -> None:
+    corpus = tmp_path / "invalid.txt"
+    corpus.write_bytes(b"valid text\n\xff\n")
+
+    with pytest.raises(UnicodeDecodeError):
+        train_byte_bpe([corpus], tmp_path / "tokenizer", vocab_size=300, min_frequency=1)

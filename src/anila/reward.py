@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from anila.checkpoint import load_checkpoint_payload
 from anila.config import LoRAConfig, ModelConfig, RewardConfig
 from anila.data import IGNORE_INDEX
 from anila.model import AnilaLM
@@ -153,8 +154,8 @@ def build_reward_scorer(config: RewardConfig, *, reward_type: str, device: torch
 
 
 def load_reward_model(checkpoint: str | Path, device: torch.device) -> RewardModel:
-    payload = torch.load(checkpoint, map_location="cpu")
-    if "model" not in payload or "model_config" not in payload or "reward_head" not in payload:
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config", "reward_head"))
+    if payload["reward_head"] is None:
         raise ValueError(f"Reward checkpoint is missing reward model payload: {checkpoint}")
     backbone = AnilaLM(_model_config_from_payload(payload))
     lora_config = payload.get("lora_config")

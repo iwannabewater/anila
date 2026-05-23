@@ -10,6 +10,11 @@ def test_model_config_fills_kv_heads() -> None:
     assert cfg.n_kv_head == 4
 
 
+def test_model_config_rejects_zero_kv_heads() -> None:
+    with pytest.raises(ValueError, match="n_kv_head"):
+        ModelConfig(n_embd=64, n_head=4, n_kv_head=0).validated()
+
+
 def test_invalid_attention_shape_fails() -> None:
     with pytest.raises(ValueError, match="n_embd"):
         ModelConfig(n_embd=65, n_head=4).validated()

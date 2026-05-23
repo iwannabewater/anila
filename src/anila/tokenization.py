@@ -64,7 +64,7 @@ class AnilaTokenizer:
 
 def _text_iterator(paths: Iterable[str | Path]) -> Iterable[str]:
     for path in paths:
-        with Path(path).open("r", encoding="utf-8", errors="ignore") as f:
+        with Path(path).open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:

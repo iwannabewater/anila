@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from rich.console import Console
 
+from anila.checkpoint import load_checkpoint_payload
 from anila.config import LoRAConfig, RunConfig, TrainConfig
 from anila.data import IGNORE_INDEX, create_dataloader
 from anila.distillation import load_teacher_model, soft_distillation_loss
@@ -41,6 +42,47 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def capture_rng_state() -> dict[str, Any]:
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "keys": numpy_state[1].tolist(),
+            "position": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+    }
+
+
+def restore_rng_state(state: dict[str, Any]) -> None:
+    python_state = state.get("python")
+    numpy_state = state.get("numpy")
+    torch_state = state.get("torch")
+    if python_state is None or not isinstance(numpy_state, dict) or not isinstance(torch_state, torch.Tensor):
+        raise ValueError("checkpoint rng_state is invalid")
+    try:
+        random.setstate(python_state)
+        np.random.set_state(
+            (
+                str(numpy_state["bit_generator"]),
+                np.asarray(numpy_state["keys"], dtype=np.uint32),
+                int(numpy_state["position"]),
+                int(numpy_state["has_gauss"]),
+                float(numpy_state["cached_gaussian"]),
+            )
+        )
+        torch.set_rng_state(torch_state)
+        cuda_state = state.get("cuda")
+        if torch.cuda.is_available() and isinstance(cuda_state, list) and cuda_state:
+            torch.cuda.set_rng_state_all(cuda_state)
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError("checkpoint rng_state is invalid") from exc
 
 
 def resolve_device(device: str) -> torch.device:
@@ -168,7 +210,7 @@ class CheckpointManager:
         load_path = Path(path) if path else self.latest_path
         if not load_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {load_path}")
-        return torch.load(load_path, map_location="cpu")
+        return load_checkpoint_payload(load_path)
 
     def _prune_old_step_checkpoints(self, root: Path) -> None:
         if self.keep_last is None:
@@ -378,18 +420,22 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate(self) -> float:
+        rng_state = capture_rng_state()
         was_training = self.model.training
         self.model.eval()
         losses = []
-        for index, batch in enumerate(self.eval_loader):
-            if index >= self.train_cfg.eval_batches:
-                break
-            batch = self._move_batch_to_device(batch)
-            with torch.autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.dtype != torch.float32):
-                loss = self._compute_batch_loss(batch)
-            losses.append(float(loss.detach().cpu()))
-        if was_training:
-            self.model.train()
+        try:
+            for index, batch in enumerate(self.eval_loader):
+                if index >= self.train_cfg.eval_batches:
+                    break
+                batch = self._move_batch_to_device(batch)
+                with torch.autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.dtype != torch.float32):
+                    loss = self._compute_batch_loss(batch)
+                losses.append(float(loss.detach().cpu()))
+        finally:
+            restore_rng_state(rng_state)
+            if was_training:
+                self.model.train()
         return sum(losses) / max(len(losses), 1)
 
     def save(self, step: int) -> Path:
@@ -417,6 +463,7 @@ class Trainer:
             "tokenizer_path": self.train_cfg.tokenizer_path,
             "step": step,
             "optimizer": self.optimizer.state_dict(),
+            "rng_state": capture_rng_state(),
         }
         path = self.checkpoints.save(payload, step=step)
         self.recorder.append(event="checkpoint", step=step, path=str(path))
@@ -432,12 +479,12 @@ class Trainer:
             self._reward_model().reward_head.load_state_dict(payload["reward_head"])
         if "optimizer" in payload:
             self.optimizer.load_state_dict(payload["optimizer"])
+        if "rng_state" in payload:
+            restore_rng_state(payload["rng_state"])
         self.start_step = int(payload.get("step", 0))
 
     def _load_initial_weights(self, path: str) -> dict[str, Any]:
-        payload = torch.load(path, map_location="cpu")
-        if "model" not in payload:
-            raise ValueError(f"Initial checkpoint does not contain model weights: {path}")
+        payload = load_checkpoint_payload(path, required_keys=("model",))
         state_dict = payload["model"]
         if self.config.lora.enabled:
             state_dict = adapt_state_dict_for_lora(self.model, state_dict)
@@ -807,9 +854,7 @@ class Trainer:
         return item
 
     def _load_reference_model(self, checkpoint: str) -> AnilaLM:
-        payload = torch.load(checkpoint, map_location="cpu")
-        if "model" not in payload:
-            raise ValueError(f"Reference checkpoint does not contain model weights: {checkpoint}")
+        payload = load_checkpoint_payload(checkpoint, required_keys=("model",))
         reference = AnilaLM(self.model_cfg)
         lora_config = payload.get("lora_config")
         if isinstance(lora_config, dict) and lora_config.get("enabled", False):

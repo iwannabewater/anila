@@ -25,7 +25,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "rich", specifier = ">=13.7" },
     { name = "tokenizers", specifier = ">=0.20" },
-    { name = "torch", specifier = ">=2.5" },
+    { name = "torch", specifier = ">=2.10" },
     { name = "typer", specifier = ">=0.12" },
 ]
 
