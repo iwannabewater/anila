@@ -11,6 +11,7 @@ Reliability baseline.
 - Added regression coverage and a contributor contract for checkpoint, data, generation, and verification boundaries.
 - Added `anila --version`, smoke-tested CLI help, and documented the package-root API for common training and sampling entry points.
 - Added native generation steps, `generate_text`, `stream_text`, repeated CLI `--stop`, `--stream`, and JSON generation output with optional generated-token logprobs.
+- Added lightweight benchmark suites and `anila model benchmark` for grouped LM, preference, and reward evaluation runs.
 
 ## v0.1.6 - 2026-05-16
 

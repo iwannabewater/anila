@@ -13,7 +13,7 @@ The repository is intentionally small enough to study and modify, while still us
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
-- A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, structured generation, streaming, and sampling.
+- A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, benchmark suites, structured generation, streaming, and sampling.
 - Fast unit tests plus end-to-end integration coverage.
 
 ## Requirements
@@ -112,11 +112,18 @@ uv run anila model evaluate \
   --dataset examples/tiny_corpus.txt \
   --task lm \
   --objective pretrain
+
+# Run a small multi-task evaluation suite.
+uv run anila model benchmark \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --suite configs/benchmarks/quickstart.json \
+  --max-batches 1
 ```
 
 The pretraining quickstart config writes checkpoints under `runs/quickstart/pretrain/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
 
-The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
+The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model benchmark`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
 
 ## Python API
 
@@ -168,9 +175,10 @@ src/anila/
   reward.py        reward model and reward scorer adapters
   training.py      trainer, schedule, checkpointing, resume
   evaluation.py    checkpoint evaluation metrics
+  benchmark.py     lightweight benchmark suite runner
   sampling.py      checkpoint loading and text generation
   cli.py           command-line interface
-configs/           runnable training configs, including quickstart recipes
+configs/           runnable training configs and benchmark suite specs
 examples/          tiny local corpus for quickstart and integration tests
 docs/              architecture and development notes
 tests/             fast unit and integration tests
@@ -282,7 +290,16 @@ uv run anila model evaluate \
   --tokenizer runs/tokenizer \
   --dataset examples/tiny_preferences.jsonl \
   --task reward
+
+# Run a JSON benchmark suite with multiple evaluation tasks.
+uv run anila model benchmark \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --suite configs/benchmarks/quickstart.json \
+  --max-batches 1
 ```
+
+Benchmark suite files are strict JSON/TOML objects with a `tasks` list. Each task names a local dataset, a task type (`lm`, `preference`, or `reward`), and optional `batch_size` or `max_batches` overrides. The suite runner reports per-task metrics plus a compact summary, without depending on a heavy external benchmark harness.
 
 ## LoRA
 

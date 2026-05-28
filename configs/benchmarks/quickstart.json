@@ -1,0 +1,20 @@
+{
+  "name": "quickstart-smoke",
+  "tasks": [
+    {
+      "name": "tiny-corpus-lm",
+      "task": "lm",
+      "dataset_path": "examples/tiny_corpus.txt",
+      "objective": "pretrain",
+      "batch_size": 2,
+      "max_batches": 1
+    },
+    {
+      "name": "tiny-preference-policy",
+      "task": "preference",
+      "dataset_path": "examples/tiny_preferences.jsonl",
+      "batch_size": 2,
+      "max_batches": 1
+    }
+  ]
+}

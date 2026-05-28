@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from anila._version import __version__
+from anila.benchmark import evaluate_benchmark_suite
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
 from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
@@ -222,6 +223,27 @@ def evaluate_model(
         )
     else:
         raise typer.BadParameter("task must be lm, preference, or reward", param_hint="--task")
+    typer.echo(json.dumps(metrics, indent=2, sort_keys=True))
+
+
+@model_app.command("benchmark")
+def benchmark_model(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
+    tokenizer: Annotated[Path, typer.Option("--tokenizer", "-t", exists=True, readable=True)],
+    suite: Annotated[Path, typer.Option("--suite", "-s", exists=True, readable=True)],
+    batch_size: Annotated[int, typer.Option("--batch-size")] = 8,
+    max_batches: Annotated[int | None, typer.Option("--max-batches")] = None,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    """Evaluate a checkpoint against a lightweight benchmark suite."""
+    metrics = evaluate_benchmark_suite(
+        checkpoint=checkpoint,
+        tokenizer_path=tokenizer,
+        suite=suite,
+        batch_size=batch_size,
+        max_batches=max_batches,
+        device=device,
+    )
     typer.echo(json.dumps(metrics, indent=2, sort_keys=True))
 
 

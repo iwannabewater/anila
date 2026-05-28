@@ -1,4 +1,5 @@
 from anila._version import __version__
+from anila.benchmark import BenchmarkSuiteConfig, BenchmarkTaskConfig, evaluate_benchmark_suite, load_benchmark_suite
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import (
     DataConfig,
@@ -23,6 +24,8 @@ from anila.training import train
 
 __all__ = [
     "AnilaLM",
+    "BenchmarkSuiteConfig",
+    "BenchmarkTaskConfig",
     "DataConfig",
     "DPOConfig",
     "DistillConfig",
@@ -41,9 +44,11 @@ __all__ = [
     "evaluate_lm_checkpoint",
     "evaluate_policy_preferences",
     "evaluate_reward_model",
+    "evaluate_benchmark_suite",
     "generate_text",
     "inspect_checkpoint",
     "load_run_config",
+    "load_benchmark_suite",
     "merge_lora_checkpoint",
     "sample_text",
     "stream_text",

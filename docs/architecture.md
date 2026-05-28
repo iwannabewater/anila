@@ -43,6 +43,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `peft`: injects LoRA adapters into target linear modules, freezes non-adapter parameters, extracts adapter state, and merges adapters back into plain linear weights.
 - `training`: owns objective selection, device/dtype selection, TF32 runtime setup, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
 - `evaluation`: restores native checkpoints and reports held-out language-model, preference, and reward-model metrics.
+- `benchmark`: runs strict JSON/TOML benchmark suites over the native evaluation functions without pulling in a heavy harness.
 - `checkpoint`: enforces restricted checkpoint deserialization and exposes lightweight checkpoint inspection for CLI and tests.
 - `sampling`: restores checkpoints and exposes text generation.
 

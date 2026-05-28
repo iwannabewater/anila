@@ -104,6 +104,13 @@ uv run anila model evaluate \
   --tokenizer runs/tokenizer \
   --dataset examples/tiny_preferences.jsonl \
   --task reward
+
+# Run a small multi-task benchmark suite.
+uv run anila model benchmark \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --suite configs/benchmarks/quickstart.json \
+  --max-batches 1
 ```
 
 Each run writes `config.json` and `metrics.jsonl` under `train.out_dir`. These files are generated run artifacts, so they remain ignored with the rest of `runs/`.
@@ -114,7 +121,7 @@ The pretraining quickstart uses `data.pretrain_mode = "packed"`. The default rem
 
 ## Python API
 
-The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `stream_text`, checkpoint inspection/merge helpers, and evaluation functions. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
+The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `stream_text`, checkpoint inspection/merge helpers, evaluation functions, and the lightweight benchmark suite runner. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
 
 ## Runtime Flags
 
