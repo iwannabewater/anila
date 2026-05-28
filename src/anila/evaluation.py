@@ -9,7 +9,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from anila.checkpoint import load_checkpoint_payload
+from anila.checkpoint import checkpoint_model_state, load_checkpoint_payload
 from anila.config import DataConfig, DPOConfig, LoRAConfig, ModelConfig, RewardConfig, SFTConfig
 from anila.data import IGNORE_INDEX, create_dataloader
 from anila.dpo import sequence_logprobs
@@ -31,6 +31,7 @@ def evaluate_lm_checkpoint(
     device: str = "auto",
     sft_config: SFTConfig | None = None,
     data_config: DataConfig | None = None,
+    use_ema: bool = False,
 ) -> dict[str, Any]:
     if objective not in {"pretrain", "sft"}:
         raise ValueError("LM evaluation objective must be pretrain or sft")
@@ -40,7 +41,7 @@ def evaluate_lm_checkpoint(
 
     runtime_device = resolve_device(device)
     tokenizer = AnilaTokenizer.load(tokenizer_path)
-    model, payload = _load_policy_model(checkpoint, runtime_device)
+    model, payload = _load_policy_model(checkpoint, runtime_device, use_ema=use_ema)
     resolved_sft_config = sft_config or _validated_config_from_payload(payload, "sft_config", SFTConfig, SFTConfig())
     resolved_data_config = data_config or _validated_config_from_payload(payload, "data_config", DataConfig, DataConfig())
     loader = create_dataloader(
@@ -73,6 +74,7 @@ def evaluate_lm_checkpoint(
         "task": "lm",
         "objective": objective,
         "checkpoint": str(checkpoint),
+        "weights": "ema" if use_ema else "model",
         "dataset_path": dataset_path,
         "num_batches": num_batches,
         "num_tokens": total_tokens,
@@ -90,6 +92,7 @@ def evaluate_policy_preferences(
     max_batches: int | None = None,
     device: str = "auto",
     dpo_config: DPOConfig | None = None,
+    use_ema: bool = False,
 ) -> dict[str, Any]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -97,7 +100,7 @@ def evaluate_policy_preferences(
 
     runtime_device = resolve_device(device)
     tokenizer = AnilaTokenizer.load(tokenizer_path)
-    model, payload = _load_policy_model(checkpoint, runtime_device)
+    model, payload = _load_policy_model(checkpoint, runtime_device, use_ema=use_ema)
     resolved_dpo_config = dpo_config or _validated_config_from_payload(payload, "dpo_config", DPOConfig, DPOConfig())
     loader = create_dataloader(
         dataset_path,
@@ -131,6 +134,7 @@ def evaluate_policy_preferences(
     return {
         "task": "preference",
         "checkpoint": str(checkpoint),
+        "weights": "ema" if use_ema else "model",
         "dataset_path": dataset_path,
         "num_batches": num_batches,
         "num_pairs": total_pairs,
@@ -148,6 +152,7 @@ def evaluate_reward_model(
     max_batches: int | None = None,
     device: str = "auto",
     reward_config: RewardConfig | None = None,
+    use_ema: bool = False,
 ) -> dict[str, Any]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -155,7 +160,7 @@ def evaluate_reward_model(
 
     runtime_device = resolve_device(device)
     tokenizer = AnilaTokenizer.load(tokenizer_path)
-    model, payload = _load_reward_model(checkpoint, runtime_device)
+    model, payload = _load_reward_model(checkpoint, runtime_device, use_ema=use_ema)
     resolved_reward_config = reward_config or _validated_config_from_payload(
         payload, "reward_config", RewardConfig, RewardConfig()
     )
@@ -191,6 +196,7 @@ def evaluate_reward_model(
     return {
         "task": "reward",
         "checkpoint": str(checkpoint),
+        "weights": "ema" if use_ema else "model",
         "dataset_path": dataset_path,
         "num_batches": num_batches,
         "num_pairs": total_pairs,
@@ -199,18 +205,20 @@ def evaluate_reward_model(
     }
 
 
-def _load_policy_model(checkpoint: str | Path, device: torch.device) -> tuple[AnilaLM, dict[str, Any]]:
+def _load_policy_model(checkpoint: str | Path, device: torch.device, *, use_ema: bool = False) -> tuple[AnilaLM, dict[str, Any]]:
     payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     model = AnilaLM(_model_config_from_payload(payload))
     lora_config = payload.get("lora_config")
     if isinstance(lora_config, dict) and lora_config.get("enabled", False):
         apply_lora(model, LoRAConfig(**lora_config).validated())
-    model.load_state_dict(payload["model"])
+    model.load_state_dict(checkpoint_model_state(payload, use_ema=use_ema))
     model.to(device).eval()
     return model, payload
 
 
-def _load_reward_model(checkpoint: str | Path, device: torch.device) -> tuple[RewardModel, dict[str, Any]]:
+def _load_reward_model(
+    checkpoint: str | Path, device: torch.device, *, use_ema: bool = False
+) -> tuple[RewardModel, dict[str, Any]]:
     payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     if payload.get("reward_head") is None:
         raise ValueError(f"Checkpoint does not contain a reward head: {checkpoint}")
@@ -218,9 +226,15 @@ def _load_reward_model(checkpoint: str | Path, device: torch.device) -> tuple[Re
     lora_config = payload.get("lora_config")
     if isinstance(lora_config, dict) and lora_config.get("enabled", False):
         apply_lora(backbone, LoRAConfig(**lora_config).validated())
-    backbone.load_state_dict(payload["model"])
+    backbone.load_state_dict(checkpoint_model_state(payload, use_ema=use_ema))
     model = RewardModel(backbone)
-    model.reward_head.load_state_dict(payload["reward_head"])
+    head_key = "ema_reward_head" if use_ema else "reward_head"
+    head_state = payload.get(head_key)
+    if head_state is None and use_ema:
+        raise ValueError("Checkpoint does not contain EMA reward head weights")
+    if not isinstance(head_state, dict):
+        raise ValueError(f"Checkpoint {head_key} state must be a dictionary")
+    model.reward_head.load_state_dict(head_state)
     model.to(device).eval()
     return model, payload
 

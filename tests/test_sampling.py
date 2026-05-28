@@ -2,6 +2,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
 import torch
 from typer.testing import CliRunner
 
@@ -25,21 +26,22 @@ def _tokenizer(tmp_path: Path) -> Path:
     return tokenizer_dir
 
 
-def _checkpoint(tmp_path: Path, cfg: ModelConfig) -> Path:
+def _checkpoint(tmp_path: Path, cfg: ModelConfig, *, include_ema: bool = False) -> Path:
     checkpoint = tmp_path / "checkpoint.pt"
     model = AnilaLM(cfg)
-    torch.save(
-        {
-            "schema_version": 1,
-            "objective": "pretrain",
-            "model": model.state_dict(),
-            "model_config": asdict(cfg),
-            "lora_config": asdict(LoRAConfig()),
-            "tokenizer_path": "tokenizer",
-            "step": 0,
-        },
-        checkpoint,
-    )
+    payload = {
+        "schema_version": 1,
+        "objective": "pretrain",
+        "model": model.state_dict(),
+        "model_config": asdict(cfg),
+        "lora_config": asdict(LoRAConfig()),
+        "tokenizer_path": "tokenizer",
+        "step": 0,
+    }
+    if include_ema:
+        payload["ema_model"] = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+        payload["ema_decay"] = 0.99
+    torch.save(payload, checkpoint)
     return checkpoint
 
 
@@ -59,6 +61,39 @@ def test_sample_text_supports_beam_search(tmp_path: Path) -> None:
     )
 
     assert isinstance(text, str)
+
+
+def test_sample_text_can_use_ema_weights(tmp_path: Path) -> None:
+    tokenizer_dir = _tokenizer(tmp_path)
+    cfg = ModelConfig(vocab_size=300, context_length=16, n_layer=1, n_head=2, n_kv_head=1, n_embd=32).validated()
+    checkpoint = _checkpoint(tmp_path, cfg, include_ema=True)
+
+    text = sample_text(
+        checkpoint=checkpoint,
+        tokenizer_path=tokenizer_dir,
+        prompt="Anila",
+        max_new_tokens=1,
+        device="cpu",
+        use_ema=True,
+    )
+
+    assert isinstance(text, str)
+
+
+def test_sample_text_requires_ema_weights_when_requested(tmp_path: Path) -> None:
+    tokenizer_dir = _tokenizer(tmp_path)
+    cfg = ModelConfig(vocab_size=300, context_length=16, n_layer=1, n_head=2, n_kv_head=1, n_embd=32).validated()
+    checkpoint = _checkpoint(tmp_path, cfg)
+
+    with pytest.raises(ValueError, match="EMA"):
+        sample_text(
+            checkpoint=checkpoint,
+            tokenizer_path=tokenizer_dir,
+            prompt="Anila",
+            max_new_tokens=1,
+            device="cpu",
+            use_ema=True,
+        )
 
 
 def test_generate_text_returns_metadata_and_logprobs(tmp_path: Path) -> None:
@@ -151,7 +186,7 @@ def test_stop_strings_trim_generation_and_stream_chunks(tmp_path: Path, monkeypa
 def test_generate_cli_accepts_beam_search_flags(tmp_path: Path) -> None:
     tokenizer_dir = _tokenizer(tmp_path)
     cfg = ModelConfig(vocab_size=300, context_length=16, n_layer=1, n_head=2, n_kv_head=1, n_embd=32).validated()
-    checkpoint = _checkpoint(tmp_path, cfg)
+    checkpoint = _checkpoint(tmp_path, cfg, include_ema=True)
 
     result = CliRunner().invoke(
         app,
@@ -170,6 +205,7 @@ def test_generate_cli_accepts_beam_search_flags(tmp_path: Path) -> None:
             "2",
             "--length-penalty",
             "0.7",
+            "--ema",
             "--device",
             "cpu",
         ],

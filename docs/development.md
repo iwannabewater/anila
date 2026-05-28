@@ -66,6 +66,13 @@ uv run anila model generate \
   --tokenizer runs/tokenizer \
   --prompt "Anila is"
 
+# Generate from EMA weights when the checkpoint includes train.ema_decay.
+uv run anila model generate \
+  --checkpoint runs/quickstart/pretrain/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "Anila is" \
+  --ema
+
 # Generate a deterministic beam-search completion from the same checkpoint.
 uv run anila model generate \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
@@ -136,6 +143,7 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 - `gradient_checkpointing`: enables transformer block activation recomputation during backward.
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW outside CUDA.
 - `keep_last_checkpoints`: keeps only the most recent N numbered step checkpoints while preserving `latest.pt`.
+- `ema_decay`: keeps exponential moving average weights for validation, checkpointing, and optional `--ema` inference/evaluation.
 
 ## Inference Path
 
@@ -143,7 +151,7 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 
 The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment.
 
-The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, `--num-beams`, `--length-penalty`, and `--full-text/--completion-only`. It also supports repeated `--stop` strings, `--json` structured output, `--logprobs` for generated-token logprobs in JSON output, and `--stream` for single-path streaming generation.
+The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, `--num-beams`, `--length-penalty`, and `--full-text/--completion-only`. It also supports repeated `--stop` strings, `--json` structured output, `--logprobs` for generated-token logprobs in JSON output, `--stream` for single-path streaming generation, and `--ema` for checkpoints saved with EMA weights.
 
 ## Checkpoint Contract
 
@@ -165,6 +173,10 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `reward_config`: reward scorer and reward model config as plain data.
 - `value_head`: PPO value head state dict, or `None` for non-PPO objectives.
 - `reward_head`: reward model head state dict, or `None` for non-reward-model objectives.
+- `ema_model`: optional EMA model/backbone state dict when `train.ema_decay` is configured.
+- `ema_value_head`: optional EMA PPO value head state dict.
+- `ema_reward_head`: optional EMA reward model head state dict.
+- `ema_decay`: EMA decay used by the run when EMA weights are present.
 - `sft_config`: SFT formatting config as plain data.
 - `tokenizer_path`: tokenizer artifact path used by the run.
 - `step`: completed optimizer step.
@@ -176,13 +188,13 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 
 `latest.pt` is written atomically and is safe to use for resume or sampling after a completed save from a trusted run. Library reads accept tensor/plain-data checkpoint payloads through PyTorch restricted weight loading, and checkpoints containing ordinary serialized Python objects are rejected. Do not treat checkpoint loading as a sandbox for arbitrary untrusted files.
 
-`rng_state` and `data_state` restore random streams and the next built-in training batch on resume, including saves taken within an epoch. Exact replay requires unchanged dataset files and data-shaping configuration; resume rejects a changed recorded data contract. Older checkpoints without `data_state` remain loadable but begin a new deterministic training-loader sequence.
+`rng_state` and `data_state` restore random streams and the next built-in training batch on resume, including saves taken within an epoch. Exact replay requires unchanged dataset files and data-shaping configuration; resume rejects a changed recorded data contract. Older checkpoints without `data_state` remain loadable but begin a new deterministic training-loader sequence. Older checkpoints without EMA state also remain loadable when `train.ema_decay` is configured; the trainer initializes EMA from the restored model weights.
 
 When LoRA is enabled, adapter-only checkpoints are also written under `checkpoints/adapters/`.
 
-Merged LoRA exports add `merged_lora_targets` and `merged_from_checkpoint`, reset `lora_config.enabled` to false, clear `adapter_checkpoint`, and store ordinary base model keys under `model`.
+Merged LoRA exports add `merged_lora_targets` and `merged_from_checkpoint`, reset `lora_config.enabled` to false, clear `adapter_checkpoint`, and store ordinary base model keys under `model` and `ema_model` when EMA weights are present.
 
-Safetensors exports are optional artifact adapters. They write namespaced tensors such as `model.embed.weight` plus `anila_safetensors.json` metadata, but native checkpoint resume, sampling, and evaluation continue to use restricted `.pt` checkpoint payloads.
+Safetensors exports are optional artifact adapters. They write namespaced tensors such as `model.embed.weight` and `ema_model.embed.weight` plus `anila_safetensors.json` metadata, but native checkpoint resume, sampling, and evaluation continue to use restricted `.pt` checkpoint payloads.
 
 ## Release Hygiene
 

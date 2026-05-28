@@ -6,6 +6,7 @@ import os
 import random
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from inspect import signature
 from pathlib import Path
@@ -373,6 +374,10 @@ class Trainer:
         if self.train_cfg.compile:
             self.model = torch.compile(self.model)
 
+        self.ema_state: dict[str, torch.Tensor] | None = None
+        if self.train_cfg.ema_decay is not None:
+            self.ema_state = _clone_floating_state_dict(self._runtime_model())
+
         self.optimizer = configure_optimizer(self.model, self.train_cfg, self.device)
         self.recorder = RunRecorder(self.train_cfg.out_dir)
         self.recorder.write_config(self.config)
@@ -437,7 +442,8 @@ class Trainer:
             f"[bold]Anila[/bold] training on {self.device} with dtype={self.dtype}, "
             f"params={format_parameter_count(sum(param.numel() for param in runtime_model.parameters()))}, "
             f"trainable={format_parameter_count(trainable_parameter_count(runtime_model))}, "
-            f"grad_ckpt={self.train_cfg.gradient_checkpointing}"
+            f"grad_ckpt={self.train_cfg.gradient_checkpointing}, "
+            f"ema={self.train_cfg.ema_decay if self.train_cfg.ema_decay is not None else 'off'}"
         )
         start_time = time.time()
         self.model.train()
@@ -463,8 +469,11 @@ class Trainer:
             self.scaler.unscale_(self.optimizer)
             if self.train_cfg.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.train_cfg.grad_clip)
+            scale_before_step = self.scaler.get_scale()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            if self._optimizer_step_was_applied(scale_before_step):
+                self._update_ema_state()
 
             completed_step = step + 1
             if completed_step % self.train_cfg.log_interval == 0:
@@ -497,13 +506,16 @@ class Trainer:
         self.model.eval()
         losses = []
         try:
-            for index, batch in enumerate(self.eval_loader):
-                if index >= self.train_cfg.eval_batches:
-                    break
-                batch = self._move_batch_to_device(batch)
-                with torch.autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.dtype != torch.float32):
-                    loss = self._compute_batch_loss(batch)
-                losses.append(float(loss.detach().cpu()))
+            with self._ema_weights_for_eval():
+                for index, batch in enumerate(self.eval_loader):
+                    if index >= self.train_cfg.eval_batches:
+                        break
+                    batch = self._move_batch_to_device(batch)
+                    with torch.autocast(
+                        device_type=self.device.type, dtype=self.dtype, enabled=self.dtype != torch.float32
+                    ):
+                        loss = self._compute_batch_loss(batch)
+                    losses.append(float(loss.detach().cpu()))
         finally:
             restore_rng_state(rng_state)
             if was_training:
@@ -541,6 +553,7 @@ class Trainer:
                 "contract": self._data_resume_contract(),
             },
         }
+        payload.update(self._ema_payload_states())
         path = self.checkpoints.save(payload, step=step)
         self.recorder.append(event="checkpoint", step=step, path=str(path))
         console.print(f"saved checkpoint: {path}")
@@ -555,6 +568,7 @@ class Trainer:
             self._reward_model().reward_head.load_state_dict(payload["reward_head"])
         if "optimizer" in payload:
             self.optimizer.load_state_dict(payload["optimizer"])
+        self._restore_ema_state(payload)
         if "rng_state" in payload:
             restore_rng_state(payload["rng_state"])
         data_state = payload.get("data_state")
@@ -598,6 +612,76 @@ class Trainer:
             "step": step,
         }
         return self.checkpoints.save_adapter(payload, step=step)
+
+    def _optimizer_step_was_applied(self, scale_before_step: float) -> bool:
+        if not self.scaler.is_enabled():
+            return True
+        return self.scaler.get_scale() >= scale_before_step
+
+    def _update_ema_state(self) -> None:
+        if self.ema_state is None or self.train_cfg.ema_decay is None:
+            return
+        decay = float(self.train_cfg.ema_decay)
+        current = self._runtime_model().state_dict()
+        for name, value in current.items():
+            if not torch.is_floating_point(value):
+                continue
+            if name not in self.ema_state:
+                self.ema_state[name] = value.detach().clone()
+                continue
+            self.ema_state[name].mul_(decay).add_(value.detach(), alpha=1.0 - decay)
+
+    @contextmanager
+    def _ema_weights_for_eval(self) -> Iterator[None]:
+        if self.ema_state is None:
+            yield
+            return
+        runtime_model = self._runtime_model()
+        current = runtime_model.state_dict()
+        backup = {name: current[name].detach().clone() for name in self.ema_state if name in current}
+        runtime_model.load_state_dict(self.ema_state, strict=False)
+        try:
+            yield
+        finally:
+            runtime_model.load_state_dict(backup, strict=False)
+
+    def _ema_payload_states(self) -> dict[str, Any]:
+        if self.ema_state is None:
+            return {}
+        if self.train_cfg.objective == "ppo":
+            payload: dict[str, Any] = {
+                "ema_model": _state_to_cpu(_strip_state_prefix(self.ema_state, "policy.")),
+                "ema_value_head": _state_to_cpu(_strip_state_prefix(self.ema_state, "value_head.")),
+            }
+        elif self.train_cfg.objective == "reward_model":
+            payload = {
+                "ema_model": _state_to_cpu(_strip_state_prefix(self.ema_state, "backbone.")),
+                "ema_reward_head": _state_to_cpu(_strip_state_prefix(self.ema_state, "reward_head.")),
+            }
+        else:
+            payload = {"ema_model": _state_to_cpu(self.ema_state)}
+        payload["ema_decay"] = float(self.train_cfg.ema_decay) if self.train_cfg.ema_decay is not None else None
+        return payload
+
+    def _restore_ema_state(self, payload: dict[str, Any]) -> None:
+        if self.train_cfg.ema_decay is None:
+            self.ema_state = None
+            return
+        ema_model = payload.get("ema_model")
+        if ema_model is None:
+            self.ema_state = _clone_floating_state_dict(self._runtime_model())
+            return
+        if not isinstance(ema_model, dict):
+            raise ValueError("checkpoint ema_model state must be a dictionary")
+        if self.train_cfg.objective == "ppo":
+            loaded: dict[str, Any] = _add_state_prefix(ema_model, "policy.")
+            loaded.update(_add_state_prefix(_required_ema_head(payload, "ema_value_head"), "value_head."))
+        elif self.train_cfg.objective == "reward_model":
+            loaded = _add_state_prefix(ema_model, "backbone.")
+            loaded.update(_add_state_prefix(_required_ema_head(payload, "ema_reward_head"), "reward_head."))
+        else:
+            loaded = dict(ema_model)
+        self.ema_state = _load_ema_state_for_model(self._runtime_model(), loaded)
 
     def _compute_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         if self.train_cfg.objective == "distill" and self.config.distill.mode == "soft":
@@ -989,6 +1073,53 @@ class Trainer:
         if isinstance(model, RewardModel):
             return model.backbone
         return model
+
+
+def _clone_floating_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    return {
+        name: tensor.detach().clone()
+        for name, tensor in model.state_dict().items()
+        if torch.is_floating_point(tensor)
+    }
+
+
+def _state_to_cpu(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return {name: tensor.detach().cpu().clone() for name, tensor in state.items()}
+
+
+def _strip_state_prefix(state: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
+    return {name.removeprefix(prefix): tensor for name, tensor in state.items() if name.startswith(prefix)}
+
+
+def _add_state_prefix(state: dict[str, Any], prefix: str) -> dict[str, Any]:
+    return {f"{prefix}{name}": tensor for name, tensor in state.items()}
+
+
+def _required_ema_head(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    state = payload.get(key)
+    if not isinstance(state, dict):
+        raise ValueError(f"checkpoint {key} state must be a dictionary")
+    return state
+
+
+def _load_ema_state_for_model(model: torch.nn.Module, loaded: dict[str, Any]) -> dict[str, torch.Tensor]:
+    current = model.state_dict()
+    expected = {name for name, tensor in current.items() if torch.is_floating_point(tensor)}
+    missing = sorted(expected - set(loaded))
+    unexpected = sorted(set(loaded) - expected)
+    if missing or unexpected:
+        raise ValueError(f"checkpoint EMA state is not compatible with the current model (missing={missing}, unexpected={unexpected})")
+
+    ema_state: dict[str, torch.Tensor] = {}
+    for name in sorted(expected):
+        value = loaded[name]
+        if not isinstance(value, torch.Tensor) or not torch.is_floating_point(value):
+            raise ValueError("checkpoint EMA state must contain only floating point tensors")
+        target = current[name]
+        if value.shape != target.shape:
+            raise ValueError(f"checkpoint EMA tensor shape does not match current model for {name}")
+        ema_state[name] = value.detach().to(device=target.device, dtype=target.dtype).clone()
+    return ema_state
 
 
 def train(config: RunConfig) -> None:

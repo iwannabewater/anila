@@ -32,6 +32,7 @@ Generated: 2026-05-28
 - Added native single-path generation steps, streaming text output, text-level stop strings, structured generation metadata, and optional generated-token logprobs.
 - Added lightweight JSON/TOML benchmark suites over the native LM, preference, and reward evaluators.
 - Added optional safetensors tensor export with a native Anila manifest while keeping `.pt` checkpoint loading canonical.
+- Added optional `train.ema_decay` with EMA validation, checkpoint resume, checkpoint inspection, sampling, evaluation, benchmark, LoRA merge, and safetensors export support.
 
 ## Non-Goals For This Release
 
@@ -47,4 +48,4 @@ Generated: 2026-05-28
 2. Prototype distributed runtime support behind a separate adapter after single-process coverage remains stable.
 3. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
 4. Consider batched beam-search improvements only after single-prompt beam use cases need more throughput.
-5. Add optional EMA weights for evaluation-only stabilization if real runs show noisy checkpoint selection.
+5. Add richer benchmark task types only after the lightweight suite format has real project datasets.

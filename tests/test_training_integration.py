@@ -43,10 +43,17 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
             log_interval=1,
             device="cpu",
             dtype="float32",
+            ema_decay=0.9,
         ),
         data=DataConfig(pretrain_mode="packed"),
     )
-    Trainer(run).train()
+    trainer = Trainer(run)
+    trainer.train()
+    model_before_eval = {name: tensor.detach().clone() for name, tensor in trainer._raw_model().state_dict().items()}
+    trainer.evaluate()
+    for name, expected_tensor in model_before_eval.items():
+        torch.testing.assert_close(trainer._raw_model().state_dict()[name], expected_tensor)
+
     checkpoint = tmp_path / "run" / "checkpoints" / "latest.pt"
     config_snapshot = tmp_path / "run" / "config.json"
     metrics = tmp_path / "run" / "metrics.jsonl"
@@ -58,6 +65,9 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     assert payload["schema_version"] == 1
     assert payload["objective"] == "pretrain"
     assert payload["data_config"]["pretrain_mode"] == "packed"
+    assert payload["train_config"]["ema_decay"] == 0.9
+    assert "ema_model" in payload
+    assert set(payload["ema_model"]) == set(payload["model"])
     assert "rng_state" in payload
     assert "data_state" in payload
     snapshot = json.loads(config_snapshot.read_text(encoding="utf-8"))
@@ -67,14 +77,18 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
 
     resumed = Trainer(replace(run, train=replace(run.train, resume=str(checkpoint), max_steps=3)))
     assert resumed.start_step == 2
+    assert resumed.ema_state is not None
     assert torch.equal(torch.get_rng_state(), payload["rng_state"]["torch"])
 
     legacy_checkpoint = tmp_path / "legacy-without-data-state.pt"
     legacy_payload = dict(payload)
     legacy_payload.pop("data_state")
+    legacy_payload.pop("ema_model")
+    legacy_payload.pop("ema_decay")
     torch.save(legacy_payload, legacy_checkpoint)
     legacy_resumed = Trainer(replace(run, train=replace(run.train, resume=str(legacy_checkpoint), max_steps=3)))
     assert legacy_resumed.start_step == 2
+    assert legacy_resumed.ema_state is not None
     next(legacy_resumed.train_iterator)
 
 

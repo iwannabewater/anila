@@ -187,3 +187,13 @@ def test_train_config_validates_checkpoint_retention() -> None:
         TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", keep_last_checkpoints=0).validated()
     with pytest.raises(ValueError, match="keep_last_checkpoints"):
         TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", keep_last_checkpoints=True).validated()
+
+
+def test_train_config_validates_ema_decay() -> None:
+    cfg = TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", ema_decay=0.999).validated()
+    assert cfg.ema_decay == 0.999
+
+    with pytest.raises(ValueError, match="ema_decay"):
+        TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", ema_decay=1.0).validated()
+    with pytest.raises(ValueError, match="ema_decay"):
+        TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", ema_decay=True).validated()

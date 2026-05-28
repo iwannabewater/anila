@@ -8,7 +8,7 @@ The repository is intentionally small enough to study and modify, while still us
 
 - Byte-level BPE tokenizer training.
 - GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, streaming steps, top-k/top-p sampling, and native beam search.
-- Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, RNG-preserving validation, checkpointed random state, resume, and atomic saves.
+- Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, optional EMA weights, RNG-preserving validation, checkpointed random state, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
@@ -82,6 +82,13 @@ uv run anila checkpoint merge-lora \
 uv run anila checkpoint export-safetensors \
   --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
   --out-dir runs/quickstart/sft/safetensors
+
+# Use checkpoint EMA weights for inference when train.ema_decay was configured.
+uv run anila model generate \
+  --checkpoint runs/quickstart/pretrain/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "Anila is" \
+  --ema
 
 # Generate text from a checkpoint.
 uv run anila model generate \
@@ -219,8 +226,9 @@ Useful runtime flags in `train`:
 - `gradient_checkpointing`: recomputes transformer blocks during backward to reduce activation memory.
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
 - `keep_last_checkpoints`: when set, keeps only the most recent N step checkpoints plus `latest.pt` to limit local disk growth.
+- `ema_decay`: when set to a value in `(0, 1)`, maintains exponential moving average weights for validation, checkpointing, and optional inference/evaluation.
 
-Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, streaming single-path steps, and deterministic beam search through `num_beams`. In batched single-path generation, rows that emit `eos_id` remain terminal while unfinished rows continue. The sampling API layers text-level stop strings, structured generation metadata, optional token logprobs, and `stream_text` on top of the native model loop without changing the default `sample_text` string return.
+Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, streaming single-path steps, and deterministic beam search through `num_beams`. In batched single-path generation, rows that emit `eos_id` remain terminal while unfinished rows continue. The sampling API layers text-level stop strings, structured generation metadata, optional token logprobs, EMA checkpoint selection through `use_ema=True` or CLI `--ema`, and `stream_text` on top of the native model loop without changing the default `sample_text` string return.
 
 ## Data Modes
 
@@ -279,6 +287,8 @@ or chat messages:
 - `--task lm`: token-weighted negative log-likelihood and perplexity for `--objective pretrain` or `--objective sft`.
 - `--task preference`: chosen-vs-rejected policy accuracy and mean log-probability margin on DPO-style records.
 - `--task reward`: chosen-vs-rejected reward-model accuracy and mean score margin.
+
+Pass `--ema` to evaluate or benchmark the EMA weights saved by runs configured with `train.ema_decay`.
 
 ```bash
 # Measure pretraining loss/perplexity.
@@ -343,7 +353,7 @@ uv run anila checkpoint merge-lora \
 
 ## Artifact Export
 
-`anila checkpoint export-safetensors` writes a tensor-only `model.safetensors` file plus an `anila_safetensors.json` manifest with native metadata such as model config, objective, tokenizer path, tensor groups, and source checkpoint. This is an artifact export adapter, not a Hugging Face model conversion and not a replacement for native `.pt` checkpoints.
+`anila checkpoint export-safetensors` writes a tensor-only `model.safetensors` file plus an `anila_safetensors.json` manifest with native metadata such as model config, objective, tokenizer path, tensor groups, EMA tensor groups when present, and source checkpoint. This is an artifact export adapter, not a Hugging Face model conversion and not a replacement for native `.pt` checkpoints.
 
 ```bash
 uv run anila checkpoint export-safetensors \

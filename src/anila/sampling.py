@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from anila.checkpoint import load_checkpoint_payload
+from anila.checkpoint import checkpoint_model_state, load_checkpoint_payload
 from anila.config import ModelConfig
 from anila.model import AnilaLM
 from anila.peft import apply_lora
@@ -52,6 +52,7 @@ def _load_model_and_tokenizer(
     checkpoint: str | Path,
     tokenizer_path: str | Path,
     device: str,
+    use_ema: bool = False,
 ) -> tuple[AnilaLM, AnilaTokenizer, torch.device]:
     runtime_device = resolve_device(device)
     payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
@@ -62,7 +63,7 @@ def _load_model_and_tokenizer(
         from anila.config import LoRAConfig
 
         apply_lora(model, LoRAConfig(**lora_config).validated())
-    model.load_state_dict(payload["model"])
+    model.load_state_dict(checkpoint_model_state(payload, use_ema=use_ema))
     model.to(runtime_device).eval()
     return model, tokenizer, runtime_device
 
@@ -168,11 +169,13 @@ def generate_text(
     return_full_text: bool = True,
     stop_strings: Sequence[str] | None = None,
     return_logprobs: bool = False,
+    use_ema: bool = False,
 ) -> GeneratedText:
     model, tokenizer, runtime_device = _load_model_and_tokenizer(
         checkpoint=checkpoint,
         tokenizer_path=tokenizer_path,
         device=device,
+        use_ema=use_ema,
     )
     generator = _generator_for_seed(seed, runtime_device)
     ids = torch.tensor([tokenizer.encode(prompt, add_bos=True)], dtype=torch.long, device=runtime_device)
@@ -260,6 +263,7 @@ def sample_text(
     seed: int | None = None,
     return_full_text: bool = True,
     stop_strings: Sequence[str] | None = None,
+    use_ema: bool = False,
 ) -> str:
     return generate_text(
         checkpoint=checkpoint,
@@ -278,6 +282,7 @@ def sample_text(
         seed=seed,
         return_full_text=return_full_text,
         stop_strings=stop_strings,
+        use_ema=use_ema,
     ).text
 
 
@@ -296,11 +301,13 @@ def stream_text(
     do_sample: bool = True,
     seed: int | None = None,
     stop_strings: Sequence[str] | None = None,
+    use_ema: bool = False,
 ) -> Iterator[str]:
     model, tokenizer, runtime_device = _load_model_and_tokenizer(
         checkpoint=checkpoint,
         tokenizer_path=tokenizer_path,
         device=device,
+        use_ema=use_ema,
     )
     generator = _generator_for_seed(seed, runtime_device)
     ids = torch.tensor([tokenizer.encode(prompt, add_bos=True)], dtype=torch.long, device=runtime_device)

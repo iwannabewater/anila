@@ -103,6 +103,7 @@ def sample(
     return_logprobs: Annotated[bool, typer.Option("--logprobs", help="Include generated token logprobs in JSON output.")] = False,
     json_output: Annotated[bool, typer.Option("--json/--text", help="Print structured generation metadata as JSON.")] = False,
     stream: Annotated[bool, typer.Option("--stream/--no-stream", help="Stream generated text chunks as they are decoded.")] = False,
+    use_ema: Annotated[bool, typer.Option("--ema/--no-ema", help="Use EMA model weights when present.")] = False,
 ) -> None:
     """Generate text from a checkpoint."""
     if top_k < 0:
@@ -134,6 +135,7 @@ def sample(
             do_sample=do_sample,
             seed=seed,
             stop_strings=stop,
+            use_ema=use_ema,
         ):
             typer.echo(chunk, nl=False)
         typer.echo()
@@ -157,6 +159,7 @@ def sample(
             return_full_text=return_full_text,
             stop_strings=stop,
             return_logprobs=return_logprobs,
+            use_ema=use_ema,
         )
         typer.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
         return
@@ -177,6 +180,7 @@ def sample(
         seed=seed,
         return_full_text=return_full_text,
         stop_strings=stop,
+        use_ema=use_ema,
     )
     typer.echo(text)
 
@@ -191,6 +195,7 @@ def evaluate_model(
     batch_size: Annotated[int, typer.Option("--batch-size")] = 8,
     max_batches: Annotated[int | None, typer.Option("--max-batches")] = None,
     device: Annotated[str, typer.Option("--device")] = "auto",
+    use_ema: Annotated[bool, typer.Option("--ema/--no-ema", help="Use EMA model weights when present.")] = False,
 ) -> None:
     """Evaluate a checkpoint and print JSON metrics."""
     if task is EvaluationTask.lm:
@@ -202,6 +207,7 @@ def evaluate_model(
             batch_size=batch_size,
             max_batches=max_batches,
             device=device,
+            use_ema=use_ema,
         )
     elif task is EvaluationTask.preference:
         metrics = evaluate_policy_preferences(
@@ -211,6 +217,7 @@ def evaluate_model(
             batch_size=batch_size,
             max_batches=max_batches,
             device=device,
+            use_ema=use_ema,
         )
     elif task is EvaluationTask.reward:
         metrics = evaluate_reward_model(
@@ -220,6 +227,7 @@ def evaluate_model(
             batch_size=batch_size,
             max_batches=max_batches,
             device=device,
+            use_ema=use_ema,
         )
     else:
         raise typer.BadParameter("task must be lm, preference, or reward", param_hint="--task")
@@ -234,6 +242,7 @@ def benchmark_model(
     batch_size: Annotated[int, typer.Option("--batch-size")] = 8,
     max_batches: Annotated[int | None, typer.Option("--max-batches")] = None,
     device: Annotated[str, typer.Option("--device")] = "auto",
+    use_ema: Annotated[bool, typer.Option("--ema/--no-ema", help="Use EMA model weights when present.")] = False,
 ) -> None:
     """Evaluate a checkpoint against a lightweight benchmark suite."""
     metrics = evaluate_benchmark_suite(
@@ -243,6 +252,7 @@ def benchmark_model(
         batch_size=batch_size,
         max_batches=max_batches,
         device=device,
+        use_ema=use_ema,
     )
     typer.echo(json.dumps(metrics, indent=2, sort_keys=True))
 

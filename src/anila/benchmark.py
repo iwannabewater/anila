@@ -80,6 +80,7 @@ def evaluate_benchmark_suite(
     batch_size: int = 8,
     max_batches: int | None = None,
     device: str = "auto",
+    use_ema: bool = False,
 ) -> dict[str, Any]:
     _validate_positive_int(batch_size, "batch_size")
     if max_batches is not None:
@@ -93,6 +94,7 @@ def evaluate_benchmark_suite(
             default_batch_size=batch_size,
             max_batches_override=max_batches,
             device=device,
+            use_ema=use_ema,
         )
         for task in suite_config.tasks
     ]
@@ -100,6 +102,7 @@ def evaluate_benchmark_suite(
         "suite": suite_config.name,
         "checkpoint": str(checkpoint),
         "tokenizer_path": str(tokenizer_path),
+        "weights": "ema" if use_ema else "model",
         "num_tasks": len(results),
         "summary": _summarize(results),
         "results": results,
@@ -124,6 +127,7 @@ def _evaluate_task(
     default_batch_size: int,
     max_batches_override: int | None,
     device: str,
+    use_ema: bool,
 ) -> dict[str, Any]:
     batch_size = task.batch_size if task.batch_size is not None else default_batch_size
     max_batches = max_batches_override if max_batches_override is not None else task.max_batches
@@ -136,6 +140,7 @@ def _evaluate_task(
             batch_size=batch_size,
             max_batches=max_batches,
             device=device,
+            use_ema=use_ema,
         )
         primary_metric = "perplexity"
     elif task.task == "preference":
@@ -146,6 +151,7 @@ def _evaluate_task(
             batch_size=batch_size,
             max_batches=max_batches,
             device=device,
+            use_ema=use_ema,
         )
         primary_metric = "accuracy"
     elif task.task == "reward":
@@ -156,6 +162,7 @@ def _evaluate_task(
             batch_size=batch_size,
             max_batches=max_batches,
             device=device,
+            use_ema=use_ema,
         )
         primary_metric = "accuracy"
     else:

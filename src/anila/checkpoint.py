@@ -43,6 +43,7 @@ def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
         "step": payload.get("step"),
         "tokenizer_path": payload.get("tokenizer_path"),
         "has_model": "model" in payload,
+        "has_ema": payload.get("ema_model") is not None,
         "has_optimizer": "optimizer" in payload,
         "has_lora": isinstance(lora_config, dict) and bool(lora_config.get("enabled", False)),
         "has_value_head": payload.get("value_head") is not None,
@@ -90,6 +91,12 @@ def merge_lora_checkpoint(checkpoint: str | Path, out: str | Path) -> Path:
 
     merged_payload = dict(payload)
     merged_payload["model"] = model.state_dict()
+    if payload.get("ema_model") is not None:
+        ema_model = AnilaLM(_model_config_from_payload(payload))
+        apply_lora(ema_model, cfg)
+        ema_model.load_state_dict(checkpoint_model_state(payload, use_ema=True))
+        merge_lora(ema_model)
+        merged_payload["ema_model"] = ema_model.state_dict()
     merged_payload["lora_config"] = asdict(replace(cfg, enabled=False))
     merged_payload["lora_targets"] = []
     merged_payload["adapter_checkpoint"] = None
@@ -100,6 +107,21 @@ def merge_lora_checkpoint(checkpoint: str | Path, out: str | Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(merged_payload, out_path)
     return out_path
+
+
+def checkpoint_model_state(payload: dict[str, Any], *, use_ema: bool = False) -> dict[str, torch.Tensor]:
+    key = "ema_model" if use_ema else "model"
+    state = payload.get(key)
+    if state is None and use_ema:
+        raise ValueError("Checkpoint does not contain EMA model weights")
+    if not isinstance(state, dict):
+        raise ValueError(f"Checkpoint {key} state must be a dictionary")
+    for name, value in state.items():
+        if not isinstance(name, str) or not isinstance(value, torch.Tensor):
+            raise ValueError(f"Checkpoint {key} state must contain only string tensor entries")
+        if use_ema and not torch.is_floating_point(value):
+            raise ValueError(f"Checkpoint {key} state must contain only floating point tensors")
+    return state
 
 
 def export_safetensors_checkpoint(
@@ -116,7 +138,7 @@ def export_safetensors_checkpoint(
     payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
     tensors: dict[str, torch.Tensor] = {}
     tensor_groups: dict[str, int] = {}
-    for group in ("model", "value_head", "reward_head"):
+    for group in ("model", "value_head", "reward_head", "ema_model", "ema_value_head", "ema_reward_head"):
         values = payload.get(group)
         if values is None:
             continue

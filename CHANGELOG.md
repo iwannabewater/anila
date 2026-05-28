@@ -13,6 +13,7 @@ Reliability baseline.
 - Added native generation steps, `generate_text`, `stream_text`, repeated CLI `--stop`, `--stream`, and JSON generation output with optional generated-token logprobs.
 - Added lightweight benchmark suites and `anila model benchmark` for grouped LM, preference, and reward evaluation runs.
 - Added optional safetensors tensor export with `anila checkpoint export-safetensors` and a native manifest.
+- Added optional `train.ema_decay` with EMA validation, checkpoint resume, `--ema` sampling/evaluation/benchmark paths, LoRA merge handling, and safetensors export coverage.
 
 ## v0.1.6 - 2026-05-16
 

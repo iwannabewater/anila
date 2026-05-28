@@ -38,6 +38,8 @@ def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
             "objective": "reward_model",
             "step": 3,
             "model": {},
+            "ema_model": {"weight": torch.zeros(1, 32)},
+            "ema_decay": 0.99,
             "optimizer": {},
             "model_config": asdict(ModelConfig(vocab_size=128, context_length=64, n_layer=1, n_head=2, n_embd=32)),
             "train_config": asdict(
@@ -58,6 +60,7 @@ def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
     assert summary["objective"] == "reward_model"
     assert summary["step"] == 3
     assert summary["has_model"] is True
+    assert summary["has_ema"] is True
     assert summary["has_reward_head"] is True
     assert summary["model"]["context_length"] == 64
     assert summary["train"]["objective"] == "reward_model"
@@ -109,6 +112,8 @@ def test_merge_lora_checkpoint_exports_plain_model(tmp_path: Path) -> None:
             "schema_version": 1,
             "objective": "sft",
             "model": model.state_dict(),
+            "ema_model": {name: tensor.detach().clone() for name, tensor in model.state_dict().items()},
+            "ema_decay": 0.99,
             "model_config": asdict(cfg),
             "train_config": asdict(TrainConfig(dataset_path="data.jsonl", tokenizer_path="tokenizer", objective="sft")),
             "tokenizer_path": "tokenizer",
@@ -129,6 +134,7 @@ def test_merge_lora_checkpoint_exports_plain_model(tmp_path: Path) -> None:
     assert payload["lora_config"]["enabled"] is False
     assert payload["merged_lora_targets"] == targets
     assert not any(".lora_" in key or ".base." in key for key in payload["model"])
+    assert not any(".lora_" in key or ".base." in key for key in payload["ema_model"])
     assert inspect_checkpoint(out)["is_merged_lora"] is True
     torch.testing.assert_close(merged(input_ids).logits, expected, atol=1e-5, rtol=1e-5)
 
@@ -172,6 +178,8 @@ def test_export_safetensors_checkpoint_writes_weights_and_manifest(tmp_path: Pat
             "schema_version": 1,
             "objective": "pretrain",
             "model": model.state_dict(),
+            "ema_model": {name: tensor.detach().clone() for name, tensor in model.state_dict().items()},
+            "ema_decay": 0.99,
             "model_config": asdict(cfg),
             "train_config": asdict(TrainConfig(dataset_path="data.txt", tokenizer_path="tokenizer")),
             "tokenizer_path": "tokenizer",
@@ -191,7 +199,9 @@ def test_export_safetensors_checkpoint_writes_weights_and_manifest(tmp_path: Pat
     assert summary["artifact"] == "anila_safetensors"
     assert summary["weights"] == "model.safetensors"
     assert summary["tensor_groups"]["model"] == len(model.state_dict())
+    assert summary["tensor_groups"]["ema_model"] == len(model.state_dict())
     assert "model.embed.weight" in tensors
+    assert "ema_model.embed.weight" in tensors
     assert '"objective": "pretrain"' in manifest.read_text(encoding="utf-8")
 
 

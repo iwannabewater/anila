@@ -33,10 +33,11 @@ def _tokenizer(tmp_path: Path):
 def _policy_checkpoint(tmp_path: Path, cfg: ModelConfig, extra_payload: dict[str, object] | None = None) -> Path:
     checkpoint = tmp_path / "policy.pt"
     model = AnilaLM(cfg)
+    model_state = model.state_dict()
     payload = {
         "schema_version": 1,
         "objective": "pretrain",
-        "model": model.state_dict(),
+        "model": model_state,
         "model_config": asdict(cfg),
         "lora_config": asdict(LoRAConfig()),
         "tokenizer_path": "tokenizer",
@@ -83,6 +84,29 @@ def test_evaluate_lm_checkpoint_reports_loss_and_perplexity(tmp_path: Path) -> N
     assert metrics["num_tokens"] > 0
     assert metrics["loss"] > 0
     assert metrics["perplexity"] > 1
+
+
+def test_evaluate_lm_checkpoint_can_use_ema_weights(tmp_path: Path) -> None:
+    _, tokenizer_dir = _tokenizer(tmp_path)
+    data = tmp_path / "eval.txt"
+    data.write_text("Anila trains small language models.\n" * 10, encoding="utf-8")
+    cfg = ModelConfig(vocab_size=300, context_length=16, n_layer=1, n_head=2, n_kv_head=1, n_embd=32).validated()
+    ema_model = AnilaLM(cfg).state_dict()
+    checkpoint = _policy_checkpoint(tmp_path, cfg, extra_payload={"ema_model": ema_model, "ema_decay": 0.99})
+
+    metrics = evaluate_lm_checkpoint(
+        checkpoint=checkpoint,
+        tokenizer_path=tokenizer_dir,
+        dataset_path=str(data),
+        objective="pretrain",
+        batch_size=2,
+        max_batches=1,
+        device="cpu",
+        use_ema=True,
+    )
+
+    assert metrics["weights"] == "ema"
+    assert metrics["num_tokens"] > 0
 
 
 def test_evaluate_lm_checkpoint_uses_sft_config_from_checkpoint(tmp_path: Path) -> None:
@@ -177,7 +201,11 @@ def test_evaluate_cli_prints_json_metrics(tmp_path: Path) -> None:
     data = tmp_path / "eval.txt"
     data.write_text("Anila trains small language models.\n" * 10, encoding="utf-8")
     cfg = ModelConfig(vocab_size=300, context_length=16, n_layer=1, n_head=2, n_kv_head=1, n_embd=32).validated()
-    checkpoint = _policy_checkpoint(tmp_path, cfg)
+    checkpoint = _policy_checkpoint(
+        tmp_path,
+        cfg,
+        extra_payload={"ema_model": AnilaLM(cfg).state_dict(), "ema_decay": 0.99},
+    )
 
     result = CliRunner().invoke(
         app,
@@ -196,9 +224,11 @@ def test_evaluate_cli_prints_json_metrics(tmp_path: Path) -> None:
             "1",
             "--device",
             "cpu",
+            "--ema",
         ],
     )
 
     assert result.exit_code == 0
     assert '"task": "lm"' in result.output
+    assert '"weights": "ema"' in result.output
     assert '"perplexity"' in result.output

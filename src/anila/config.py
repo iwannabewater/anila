@@ -81,6 +81,7 @@ class TrainConfig:
     gradient_checkpointing: bool = False
     fused_adamw: bool = False
     keep_last_checkpoints: int | None = None
+    ema_decay: float | None = None
     resume: str | None = None
 
     def validated(self) -> TrainConfig:
@@ -133,6 +134,11 @@ class TrainConfig:
                 raise ValueError("train.keep_last_checkpoints must be a positive integer when provided")
             if self.keep_last_checkpoints <= 0:
                 raise ValueError("train.keep_last_checkpoints must be positive when provided")
+        if self.ema_decay is not None:
+            if isinstance(self.ema_decay, bool) or not isinstance(self.ema_decay, int | float):
+                raise ValueError("train.ema_decay must be a float in (0, 1) when provided")
+            if not 0.0 < float(self.ema_decay) < 1.0:
+                raise ValueError("train.ema_decay must be in (0, 1) when provided")
         return self
 
 
