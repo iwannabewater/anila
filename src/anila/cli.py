@@ -7,6 +7,7 @@ from typing import Annotated
 
 import typer
 
+from anila._version import __version__
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
 from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
@@ -14,7 +15,7 @@ from anila.sampling import sample_text
 from anila.tokenization import train_byte_bpe
 from anila.training import train
 
-app = typer.Typer(help="Anila: from-scratch language-model training.")
+app = typer.Typer(help="Anila: from-scratch language-model training.", no_args_is_help=True)
 tokenizer_app = typer.Typer(help="Tokenizer commands.")
 model_app = typer.Typer(help="Model training and generation commands.")
 checkpoint_app = typer.Typer(help="Checkpoint inspection and export commands.")
@@ -33,6 +34,27 @@ class EvaluationTask(StrEnum):
 class LanguageModelObjective(StrEnum):
     pretrain = "pretrain"
     sft = "sft"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"anila {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            help="Print the installed Anila version and exit.",
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """Run Anila commands."""
 
 
 @tokenizer_app.command("train")

@@ -12,6 +12,7 @@ Run commands through uv so the local package and locked dependencies are used:
 
 ```bash
 uv run anila --help
+uv run anila --version
 ```
 
 ## Quality Gates
@@ -101,6 +102,10 @@ Each run writes `config.json` and `metrics.jsonl` under `train.out_dir`. These f
 Quickstart configs are intentionally tiny, readable recipes under `configs/quickstart/`. Test-only end-to-end checks live under `tests/` and use integration-test naming.
 
 The pretraining quickstart uses `data.pretrain_mode = "packed"`. The default remains `sliding_window` for backward-compatible configs, and `streaming` is available for larger local text files that should not be materialized as one corpus tensor.
+
+## Python API
+
+The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, checkpoint inspection/merge helpers, and evaluation functions. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
 
 ## Runtime Flags
 

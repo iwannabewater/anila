@@ -1,6 +1,6 @@
 # Project Status
 
-Generated: 2026-05-16
+Generated: 2026-05-28
 
 ## Current Release
 
@@ -22,6 +22,14 @@ Generated: 2026-05-16
 - Integration tests use integration-test naming, keeping test vocabulary separate from user-facing run recipes.
 - Train config validation now rejects invalid AdamW betas, worker counts, device strings, output directories, and checkpoint retention counts before runtime setup.
 
+## Main Branch Since v0.1.6
+
+- Centralized library checkpoint reads on restricted `weights_only=True` deserialization and rejected object-bearing checkpoint payloads.
+- Preserved training RNG and built-in dataloader order across resume while keeping older checkpoints without data state loadable.
+- Corrected batched generation so rows that emit EOS remain terminal.
+- Kept strict UTF-8 input handling explicit for tokenizer and dataset reads.
+- Added `anila --version` and documented the small top-level Python API for common training, tokenizer, evaluation, checkpoint, and sampling entry points.
+
 ## Non-Goals For This Release
 
 - Distributed or multi-node training.
@@ -32,8 +40,8 @@ Generated: 2026-05-16
 
 ## Next Iteration Candidates
 
-1. Add optional EMA weights for evaluation-only stabilization.
+1. Add native streaming generation, stop strings, and optional token logprobs while keeping `AnilaLM.generate` semantics centralized.
 2. Add lightweight benchmark/evaluation adapters without pulling in a heavy harness.
-3. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
-4. Consider optional RoPE scaling and sliding-window attention after the current cache and generation contracts remain stable.
-5. Add batched beam search only if command-line or evaluation use cases need it; the current beam path is intentionally single-prompt and simple.
+3. Prototype Hugging Face or safetensors import/export only as optional adapters with tests and clear unsupported paths.
+4. Prototype distributed runtime support behind a separate adapter after single-process coverage remains stable.
+5. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.

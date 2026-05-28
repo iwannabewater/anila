@@ -13,6 +13,7 @@ The repository is intentionally small enough to study and modify, while still us
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
+- A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, and sampling.
 - Fast unit tests plus end-to-end integration coverage.
 
 ## Requirements
@@ -26,6 +27,9 @@ The repository is intentionally small enough to study and modify, while still us
 ```bash
 # Install the package, runtime dependencies, and development tools.
 uv sync --group dev
+
+# Confirm the installed CLI.
+uv run anila --version
 
 # Train a byte-level BPE tokenizer from the tiny local examples.
 uv run anila tokenizer train \
@@ -103,7 +107,28 @@ uv run anila model evaluate \
 
 The pretraining quickstart config writes checkpoints under `runs/quickstart/pretrain/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
 
-The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
+The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
+
+## Python API
+
+Common entry points are exported from the package root for lightweight scripts and notebooks:
+
+```python
+from pathlib import Path
+
+from anila import __version__, load_run_config, sample_text, train, train_byte_bpe
+
+train_byte_bpe([Path("examples/tiny_corpus.txt")], Path("runs/tokenizer"), vocab_size=512, min_frequency=1)
+train(load_run_config(Path("configs/quickstart/pretrain.json")))
+text = sample_text(
+    checkpoint=Path("runs/quickstart/pretrain/checkpoints/latest.pt"),
+    tokenizer_path=Path("runs/tokenizer"),
+    prompt="Anila is",
+    max_new_tokens=32,
+)
+```
+
+Lower-level modules remain importable when extending objectives, data adapters, or model internals. Checkpoint artifact reads in library code should go through Anila's checkpoint helpers rather than ad hoc `torch.load` calls.
 
 ## Quality Checks
 

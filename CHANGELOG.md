@@ -9,6 +9,7 @@ Reliability baseline.
 - Corrected batched generation so rows remain terminal after emitting EOS.
 - Rejected invalid UTF-8 training inputs and explicit zero grouped-query KV head configurations.
 - Added regression coverage and a contributor contract for checkpoint, data, generation, and verification boundaries.
+- Added `anila --version`, smoke-tested CLI help, and documented the package-root API for common training and sampling entry points.
 
 ## v0.1.6 - 2026-05-16
 
