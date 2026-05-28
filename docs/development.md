@@ -55,6 +55,11 @@ uv run anila checkpoint merge-lora \
   --checkpoint runs/quickstart/lora-sft/checkpoints/latest.pt \
   --out runs/quickstart/lora-sft/checkpoints/merged.pt
 
+# Export tensors and a native manifest for external artifact handling.
+uv run anila checkpoint export-safetensors \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --out-dir runs/quickstart/sft/safetensors
+
 # Generate a quick continuation from the PPO checkpoint.
 uv run anila model generate \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
@@ -121,7 +126,7 @@ The pretraining quickstart uses `data.pretrain_mode = "packed"`. The default rem
 
 ## Python API
 
-The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `stream_text`, checkpoint inspection/merge helpers, evaluation functions, and the lightweight benchmark suite runner. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
+The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `stream_text`, checkpoint inspection/merge/export helpers, evaluation functions, and the lightweight benchmark suite runner. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
 
 ## Runtime Flags
 
@@ -176,6 +181,8 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 When LoRA is enabled, adapter-only checkpoints are also written under `checkpoints/adapters/`.
 
 Merged LoRA exports add `merged_lora_targets` and `merged_from_checkpoint`, reset `lora_config.enabled` to false, clear `adapter_checkpoint`, and store ordinary base model keys under `model`.
+
+Safetensors exports are optional artifact adapters. They write namespaced tensors such as `model.embed.weight` plus `anila_safetensors.json` metadata, but native checkpoint resume, sampling, and evaluation continue to use restricted `.pt` checkpoint payloads.
 
 ## Release Hygiene
 

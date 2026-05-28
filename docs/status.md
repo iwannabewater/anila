@@ -31,18 +31,19 @@ Generated: 2026-05-28
 - Added `anila --version` and documented the small top-level Python API for common training, tokenizer, evaluation, checkpoint, and sampling entry points.
 - Added native single-path generation steps, streaming text output, text-level stop strings, structured generation metadata, and optional generated-token logprobs.
 - Added lightweight JSON/TOML benchmark suites over the native LM, preference, and reward evaluators.
+- Added optional safetensors tensor export with a native Anila manifest while keeping `.pt` checkpoint loading canonical.
 
 ## Non-Goals For This Release
 
 - Distributed or multi-node training.
 - External Hugging Face model import/export.
-- safetensors artifact export.
+- safetensors checkpoint import or resume.
 - FlashAttention-specific kernels beyond PyTorch scaled dot product attention.
 - Binary token caches or distributed data loading.
 
 ## Next Iteration Candidates
 
-1. Prototype Hugging Face or safetensors import/export only as optional adapters with tests and clear unsupported paths.
+1. Prototype Hugging Face import/export only as an optional adapter with tests and clear unsupported paths.
 2. Prototype distributed runtime support behind a separate adapter after single-process coverage remains stable.
 3. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
 4. Consider batched beam-search improvements only after single-prompt beam use cases need more throughput.

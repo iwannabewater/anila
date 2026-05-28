@@ -44,7 +44,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `training`: owns objective selection, device/dtype selection, TF32 runtime setup, optimizer setup, learning-rate schedule, evaluation, run recording, checkpointing, and resume.
 - `evaluation`: restores native checkpoints and reports held-out language-model, preference, and reward-model metrics.
 - `benchmark`: runs strict JSON/TOML benchmark suites over the native evaluation functions without pulling in a heavy harness.
-- `checkpoint`: enforces restricted checkpoint deserialization and exposes lightweight checkpoint inspection for CLI and tests.
+- `checkpoint`: enforces restricted checkpoint deserialization and exposes lightweight checkpoint inspection, LoRA merge, and optional tensor artifact export for CLI and tests.
 - `sampling`: restores checkpoints and exposes text generation.
 
 ## Runtime Contract
@@ -67,6 +67,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `ppo` consumes prompt JSONL records, samples online responses, assigns terminal scorer rewards plus per-token reference KL penalties, trains a value head with GAE returns, and keeps base LM checkpoints sampleable.
 - LoRA can wrap selected projection modules before training. Full checkpoints include base and adapter weights; adapter-only checkpoints are saved separately when enabled.
 - LoRA checkpoints can be exported as merged full-model checkpoints. The export keeps the native checkpoint shape, clears active LoRA metadata, records `merged_lora_targets`, and leaves the resulting `model` state dict loadable by plain `AnilaLM`.
+- Safetensors export writes tensor-only namespaced weights and a native JSON manifest. It is an optional artifact adapter; native checkpoint loading, resume, sampling, and evaluation continue to read `.pt` payloads through `load_checkpoint_payload`.
 - Evaluation restores the same native checkpoint payloads used by sampling/training, supports active LoRA checkpoints, and reports JSON metrics for `lm`, `preference`, and `reward` tasks.
 
 ## Extension Points

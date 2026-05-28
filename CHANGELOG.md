@@ -12,6 +12,7 @@ Reliability baseline.
 - Added `anila --version`, smoke-tested CLI help, and documented the package-root API for common training and sampling entry points.
 - Added native generation steps, `generate_text`, `stream_text`, repeated CLI `--stop`, `--stream`, and JSON generation output with optional generated-token logprobs.
 - Added lightweight benchmark suites and `anila model benchmark` for grouped LM, preference, and reward evaluation runs.
+- Added optional safetensors tensor export with `anila checkpoint export-safetensors` and a native manifest.
 
 ## v0.1.6 - 2026-05-16
 

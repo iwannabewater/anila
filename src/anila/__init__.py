@@ -1,6 +1,6 @@
 from anila._version import __version__
 from anila.benchmark import BenchmarkSuiteConfig, BenchmarkTaskConfig, evaluate_benchmark_suite, load_benchmark_suite
-from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
+from anila.checkpoint import export_safetensors_checkpoint, inspect_checkpoint, merge_lora_checkpoint
 from anila.config import (
     DataConfig,
     DistillConfig,
@@ -45,6 +45,7 @@ __all__ = [
     "evaluate_policy_preferences",
     "evaluate_reward_model",
     "evaluate_benchmark_suite",
+    "export_safetensors_checkpoint",
     "generate_text",
     "inspect_checkpoint",
     "load_run_config",

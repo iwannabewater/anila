@@ -13,6 +13,7 @@ The repository is intentionally small enough to study and modify, while still us
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
+- Optional safetensors tensor export with a native Anila manifest, kept outside the core checkpoint loading path.
 - A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, benchmark suites, structured generation, streaming, and sampling.
 - Fast unit tests plus end-to-end integration coverage.
 
@@ -77,6 +78,11 @@ uv run anila checkpoint merge-lora \
   --checkpoint runs/quickstart/lora-sft/checkpoints/latest.pt \
   --out runs/quickstart/lora-sft/checkpoints/merged.pt
 
+# Export native checkpoint tensors as optional safetensors artifacts.
+uv run anila checkpoint export-safetensors \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --out-dir runs/quickstart/sft/safetensors
+
 # Generate text from a checkpoint.
 uv run anila model generate \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
@@ -123,7 +129,7 @@ uv run anila model benchmark \
 
 The pretraining quickstart config writes checkpoints under `runs/quickstart/pretrain/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
 
-The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model benchmark`, `anila model generate`, `anila checkpoint inspect`, and `anila checkpoint merge-lora`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
+The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model benchmark`, `anila model generate`, `anila checkpoint inspect`, `anila checkpoint merge-lora`, and `anila checkpoint export-safetensors`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
 
 ## Python API
 
@@ -157,6 +163,12 @@ uv run ruff check .
 
 # Run the unit and integration test suite.
 uv run pytest
+```
+
+Optional artifact adapters are not required for core training or inference. Install them only when exporting those formats:
+
+```bash
+uv sync --extra artifacts --group dev
 ```
 
 ## Repository Layout
@@ -327,6 +339,16 @@ Adapter checkpoints can be folded into a plain full-model checkpoint:
 uv run anila checkpoint merge-lora \
   --checkpoint runs/quickstart/lora-sft/checkpoints/latest.pt \
   --out runs/quickstart/lora-sft/checkpoints/merged.pt
+```
+
+## Artifact Export
+
+`anila checkpoint export-safetensors` writes a tensor-only `model.safetensors` file plus an `anila_safetensors.json` manifest with native metadata such as model config, objective, tokenizer path, tensor groups, and source checkpoint. This is an artifact export adapter, not a Hugging Face model conversion and not a replacement for native `.pt` checkpoints.
+
+```bash
+uv run anila checkpoint export-safetensors \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --out-dir runs/quickstart/sft/safetensors
 ```
 
 ## Distillation

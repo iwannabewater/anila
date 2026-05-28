@@ -10,7 +10,7 @@ import typer
 
 from anila._version import __version__
 from anila.benchmark import evaluate_benchmark_suite
-from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
+from anila.checkpoint import export_safetensors_checkpoint, inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
 from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
 from anila.sampling import generate_text, sample_text, stream_text
@@ -265,6 +265,17 @@ def merge_lora_checkpoint_command(
     """Export a LoRA checkpoint as a merged full-model checkpoint."""
     path = merge_lora_checkpoint(checkpoint, out)
     typer.echo(f"saved merged checkpoint to {path}")
+
+
+@checkpoint_app.command("export-safetensors")
+def export_safetensors_command(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
+    out_dir: Annotated[Path, typer.Option("--out-dir", "-o")],
+    weights_name: Annotated[str, typer.Option("--weights-name")] = "model.safetensors",
+) -> None:
+    """Export native checkpoint tensors as optional safetensors artifacts."""
+    summary = export_safetensors_checkpoint(checkpoint, out_dir, weights_name=weights_name)
+    typer.echo(json.dumps(summary, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -3,9 +3,15 @@ from pathlib import Path
 
 import pytest
 import torch
+from safetensors.torch import load_file
 from typer.testing import CliRunner
 
-from anila.checkpoint import inspect_checkpoint, load_checkpoint_payload, merge_lora_checkpoint
+from anila.checkpoint import (
+    export_safetensors_checkpoint,
+    inspect_checkpoint,
+    load_checkpoint_payload,
+    merge_lora_checkpoint,
+)
 from anila.cli import app
 from anila.config import DataConfig, LoRAConfig, ModelConfig, TrainConfig
 from anila.model import AnilaLM
@@ -155,3 +161,73 @@ def test_merge_lora_checkpoint_cli(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert out.exists()
     assert "saved merged checkpoint" in result.output
+
+
+def test_export_safetensors_checkpoint_writes_weights_and_manifest(tmp_path: Path) -> None:
+    cfg = ModelConfig(vocab_size=32, context_length=8, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    checkpoint = tmp_path / "policy.pt"
+    model = AnilaLM(cfg)
+    torch.save(
+        {
+            "schema_version": 1,
+            "objective": "pretrain",
+            "model": model.state_dict(),
+            "model_config": asdict(cfg),
+            "train_config": asdict(TrainConfig(dataset_path="data.txt", tokenizer_path="tokenizer")),
+            "tokenizer_path": "tokenizer",
+            "step": 2,
+        },
+        checkpoint,
+    )
+
+    summary = export_safetensors_checkpoint(checkpoint, tmp_path / "export")
+
+    weights = Path(summary["weights_path"])
+    manifest = Path(summary["manifest_path"])
+    tensors = load_file(weights)
+
+    assert weights.exists()
+    assert manifest.exists()
+    assert summary["artifact"] == "anila_safetensors"
+    assert summary["weights"] == "model.safetensors"
+    assert summary["tensor_groups"]["model"] == len(model.state_dict())
+    assert "model.embed.weight" in tensors
+    assert '"objective": "pretrain"' in manifest.read_text(encoding="utf-8")
+
+
+def test_export_safetensors_checkpoint_cli(tmp_path: Path) -> None:
+    cfg = ModelConfig(vocab_size=32, context_length=8, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    checkpoint = tmp_path / "policy.pt"
+    torch.save(
+        {
+            "schema_version": 1,
+            "objective": "pretrain",
+            "model": AnilaLM(cfg).state_dict(),
+            "model_config": asdict(cfg),
+            "tokenizer_path": "tokenizer",
+        },
+        checkpoint,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["checkpoint", "export-safetensors", "--checkpoint", str(checkpoint), "--out-dir", str(tmp_path / "export")],
+    )
+
+    assert result.exit_code == 0
+    assert '"artifact": "anila_safetensors"' in result.output
+    assert (tmp_path / "export" / "model.safetensors").exists()
+
+
+def test_export_safetensors_checkpoint_rejects_nested_weight_name(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "policy.pt"
+    torch.save(
+        {
+            "model": {},
+            "model_config": asdict(ModelConfig(vocab_size=32, context_length=8, n_layer=1, n_head=4, n_embd=32)),
+        },
+        checkpoint,
+    )
+
+    with pytest.raises(ValueError, match="weights_name"):
+        export_safetensors_checkpoint(checkpoint, tmp_path / "export", weights_name="nested/model.safetensors")

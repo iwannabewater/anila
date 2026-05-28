@@ -3,8 +3,17 @@ from importlib.metadata import version as package_version
 from typer.testing import CliRunner
 
 import anila
-from anila import evaluate_benchmark_suite, generate_text, sample_text, stream_text, train, train_byte_bpe
+from anila import (
+    evaluate_benchmark_suite,
+    export_safetensors_checkpoint,
+    generate_text,
+    sample_text,
+    stream_text,
+    train,
+    train_byte_bpe,
+)
 from anila.benchmark import evaluate_benchmark_suite as module_evaluate_benchmark_suite
+from anila.checkpoint import export_safetensors_checkpoint as module_export_safetensors_checkpoint
 from anila.cli import app
 from anila.sampling import generate_text as module_generate_text
 from anila.sampling import sample_text as module_sample_text
@@ -33,6 +42,7 @@ def test_cli_help_lists_resource_groups_and_version() -> None:
 def test_top_level_api_exports_common_entrypoints() -> None:
     assert anila.__version__ == package_version("anila")
     assert evaluate_benchmark_suite is module_evaluate_benchmark_suite
+    assert export_safetensors_checkpoint is module_export_safetensors_checkpoint
     assert generate_text is module_generate_text
     assert sample_text is module_sample_text
     assert stream_text is module_stream_text

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pickle
 from dataclasses import asdict, fields, replace
 from pathlib import Path
@@ -101,9 +102,79 @@ def merge_lora_checkpoint(checkpoint: str | Path, out: str | Path) -> Path:
     return out_path
 
 
+def export_safetensors_checkpoint(
+    checkpoint: str | Path,
+    out_dir: str | Path,
+    *,
+    weights_name: str = "model.safetensors",
+) -> dict[str, Any]:
+    save_file = _safetensors_save_file()
+    weights_path_name = Path(weights_name)
+    if weights_path_name.name != weights_name or not weights_name.endswith(".safetensors"):
+        raise ValueError("weights_name must be a filename ending in .safetensors")
+
+    payload = load_checkpoint_payload(checkpoint, required_keys=("model", "model_config"))
+    tensors: dict[str, torch.Tensor] = {}
+    tensor_groups: dict[str, int] = {}
+    for group in ("model", "value_head", "reward_head"):
+        values = payload.get(group)
+        if values is None:
+            continue
+        if not isinstance(values, dict):
+            raise ValueError(f"Checkpoint {group} state must be a dictionary to export safetensors")
+        before = len(tensors)
+        tensors.update(_prefixed_tensors(group, values))
+        tensor_groups[group] = len(tensors) - before
+    if not tensors:
+        raise ValueError(f"Checkpoint does not contain exportable tensor state: {checkpoint}")
+
+    output_dir = Path(out_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    weights_path = output_dir / weights_name
+    save_file(tensors, str(weights_path), metadata={"format": "anila", "source": str(checkpoint)})
+
+    manifest = {
+        "artifact": "anila_safetensors",
+        "format": "safetensors",
+        "weights": weights_path.name,
+        "source_checkpoint": str(checkpoint),
+        "schema_version": payload.get("schema_version"),
+        "objective": payload.get("objective"),
+        "step": payload.get("step"),
+        "tokenizer_path": payload.get("tokenizer_path"),
+        "model_config": payload.get("model_config"),
+        "train_config": payload.get("train_config"),
+        "data_config": payload.get("data_config"),
+        "lora_config": payload.get("lora_config"),
+        "tensor_groups": tensor_groups,
+        "num_tensors": len(tensors),
+        "num_parameters": sum(int(tensor.numel()) for tensor in tensors.values()),
+    }
+    manifest_path = output_dir / "anila_safetensors.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return {"manifest_path": str(manifest_path), "weights_path": str(weights_path), **manifest}
+
+
 def _model_config_from_payload(payload: dict[str, Any]) -> ModelConfig:
     values = payload["model_config"]
     if not isinstance(values, dict):
         raise ValueError("checkpoint model_config must be an object")
     allowed = {field.name for field in fields(ModelConfig)}
     return ModelConfig(**{key: value for key, value in values.items() if key in allowed}).validated()
+
+
+def _prefixed_tensors(prefix: str, state: dict[str, Any]) -> dict[str, torch.Tensor]:
+    tensors: dict[str, torch.Tensor] = {}
+    for name, value in state.items():
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(f"{prefix}.{name} is not a tensor and cannot be exported as safetensors")
+        tensors[f"{prefix}.{name}"] = value.detach().cpu().contiguous().clone()
+    return tensors
+
+
+def _safetensors_save_file():
+    try:
+        from safetensors.torch import save_file
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("safetensors export requires the optional dependency: uv sync --extra artifacts") from exc
+    return save_file
