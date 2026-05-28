@@ -1,3 +1,4 @@
+import re
 from importlib.metadata import version as package_version
 
 from typer.testing import CliRunner
@@ -21,6 +22,12 @@ from anila.sampling import stream_text as module_stream_text
 from anila.tokenization import train_byte_bpe as module_train_byte_bpe
 from anila.training import train as module_train
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _plain_cli_output(output: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", output)
+
 
 def test_cli_version_reports_installed_package_version() -> None:
     result = CliRunner().invoke(app, ["--version"])
@@ -31,12 +38,13 @@ def test_cli_version_reports_installed_package_version() -> None:
 
 def test_cli_help_lists_resource_groups_and_version() -> None:
     result = CliRunner().invoke(app, ["--help"])
+    output = _plain_cli_output(result.output)
 
     assert result.exit_code == 0
-    assert "--version" in result.output
-    assert "tokenizer" in result.output
-    assert "model" in result.output
-    assert "checkpoint" in result.output
+    assert "--version" in output
+    assert "tokenizer" in output
+    assert "model" in output
+    assert "checkpoint" in output
 
 
 def test_top_level_api_exports_common_entrypoints() -> None:
