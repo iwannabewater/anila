@@ -29,6 +29,7 @@ Generated: 2026-05-28
 - Corrected batched generation so rows that emit EOS remain terminal.
 - Kept strict UTF-8 input handling explicit for tokenizer and dataset reads.
 - Added `anila --version` and documented the small top-level Python API for common training, tokenizer, evaluation, checkpoint, and sampling entry points.
+- Added native single-path generation steps, streaming text output, text-level stop strings, structured generation metadata, and optional generated-token logprobs.
 
 ## Non-Goals For This Release
 
@@ -40,8 +41,8 @@ Generated: 2026-05-28
 
 ## Next Iteration Candidates
 
-1. Add native streaming generation, stop strings, and optional token logprobs while keeping `AnilaLM.generate` semantics centralized.
-2. Add lightweight benchmark/evaluation adapters without pulling in a heavy harness.
-3. Prototype Hugging Face or safetensors import/export only as optional adapters with tests and clear unsupported paths.
-4. Prototype distributed runtime support behind a separate adapter after single-process coverage remains stable.
-5. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
+1. Add lightweight benchmark/evaluation adapters without pulling in a heavy harness.
+2. Prototype Hugging Face or safetensors import/export only as optional adapters with tests and clear unsupported paths.
+3. Prototype distributed runtime support behind a separate adapter after single-process coverage remains stable.
+4. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
+5. Consider batched beam-search improvements only after single-prompt beam use cases need more throughput.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import torch
@@ -19,6 +20,14 @@ class CausalLMOutput:
     loss: torch.Tensor | None = None
     hidden_states: torch.Tensor | None = None
     past_key_values: KVCache | None = None
+
+
+@dataclass
+class GenerationStep:
+    token_ids: torch.Tensor
+    token_logprobs: torch.Tensor
+    sequences: torch.Tensor
+    finished: torch.Tensor
 
 
 @dataclass
@@ -258,6 +267,102 @@ class AnilaLM(nn.Module):
     def set_gradient_checkpointing(self, enabled: bool) -> None:
         self.gradient_checkpointing = enabled
 
+    @staticmethod
+    def _validate_generation_args(
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_k: int | None,
+        top_p: float,
+        min_p: float,
+        repetition_penalty: float,
+        num_beams: int,
+        length_penalty: float,
+    ) -> None:
+        if max_new_tokens < 0:
+            raise ValueError("max_new_tokens cannot be negative")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+        if top_k is not None and top_k <= 0:
+            raise ValueError("top_k must be positive when provided")
+        if not 0.0 < top_p <= 1.0:
+            raise ValueError("top_p must be in (0, 1]")
+        if not 0.0 <= min_p <= 1.0:
+            raise ValueError("min_p must be in [0, 1]")
+        if repetition_penalty <= 0:
+            raise ValueError("repetition_penalty must be positive")
+        if isinstance(num_beams, bool) or not isinstance(num_beams, int) or num_beams <= 0:
+            raise ValueError("num_beams must be a positive integer")
+        if length_penalty < 0:
+            raise ValueError("length_penalty cannot be negative")
+
+    def generate_steps(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int,
+        temperature: float = 0.8,
+        top_k: int | None = 50,
+        top_p: float = 1.0,
+        min_p: float = 0.0,
+        repetition_penalty: float = 1.0,
+        eos_id: int | None = None,
+        use_cache: bool = True,
+        do_sample: bool = True,
+        generator: torch.Generator | None = None,
+    ) -> Iterator[GenerationStep]:
+        self._validate_generation_args(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            num_beams=1,
+            length_penalty=1.0,
+        )
+        past_key_values = None
+        finished = torch.zeros((input_ids.size(0), 1), dtype=torch.bool, device=input_ids.device)
+        for _ in range(max_new_tokens):
+            with torch.inference_mode():
+                cache_has_room = (
+                    use_cache
+                    and past_key_values is not None
+                    and past_key_values[0][0].size(-2) < self.config.context_length
+                )
+                if cache_has_room:
+                    idx_cond = input_ids[:, -1:]
+                else:
+                    past_key_values = None
+                    idx_cond = input_ids[:, -self.config.context_length :]
+                out = self(idx_cond, past_key_values=past_key_values, use_cache=use_cache)
+                past_key_values = out.past_key_values
+                logits = out.logits[:, -1, :] / temperature
+                if repetition_penalty != 1.0:
+                    logits = apply_repetition_penalty(logits, input_ids, penalty=repetition_penalty)
+                logits = filter_logits(logits, top_k=top_k, top_p=top_p, min_p=min_p)
+                if do_sample:
+                    probs = F.softmax(logits, dim=-1)
+                    next_id = torch.multinomial(probs, num_samples=1, generator=generator)
+                else:
+                    next_id = torch.argmax(logits, dim=-1, keepdim=True)
+                token_logprobs = F.log_softmax(logits, dim=-1).gather(1, next_id)
+                already_finished = finished
+                if eos_id is not None:
+                    next_id = torch.where(already_finished, torch.full_like(next_id, eos_id), next_id)
+                    token_logprobs = torch.where(already_finished, torch.zeros_like(token_logprobs), token_logprobs)
+                    finished = finished | next_id.eq(eos_id)
+                input_ids = torch.cat([input_ids, next_id], dim=1)
+                step = GenerationStep(
+                    token_ids=next_id,
+                    token_logprobs=token_logprobs,
+                    sequences=input_ids,
+                    finished=finished.squeeze(1),
+                )
+            yield step
+            if eos_id is not None and torch.all(finished):
+                break
+
     @torch.inference_mode()
     def generate(
         self,
@@ -276,22 +381,16 @@ class AnilaLM(nn.Module):
         do_sample: bool = True,
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
-        if max_new_tokens < 0:
-            raise ValueError("max_new_tokens cannot be negative")
-        if temperature <= 0:
-            raise ValueError("temperature must be positive")
-        if top_k is not None and top_k <= 0:
-            raise ValueError("top_k must be positive when provided")
-        if not 0.0 < top_p <= 1.0:
-            raise ValueError("top_p must be in (0, 1]")
-        if not 0.0 <= min_p <= 1.0:
-            raise ValueError("min_p must be in [0, 1]")
-        if repetition_penalty <= 0:
-            raise ValueError("repetition_penalty must be positive")
-        if isinstance(num_beams, bool) or not isinstance(num_beams, int) or num_beams <= 0:
-            raise ValueError("num_beams must be a positive integer")
-        if length_penalty < 0:
-            raise ValueError("length_penalty cannot be negative")
+        self._validate_generation_args(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            num_beams=num_beams,
+            length_penalty=length_penalty,
+        )
         if num_beams > 1:
             return self._generate_beam_search(
                 input_ids,
@@ -305,31 +404,20 @@ class AnilaLM(nn.Module):
                 length_penalty=length_penalty,
                 eos_id=eos_id,
             )
-        past_key_values = None
-        finished = torch.zeros((input_ids.size(0), 1), dtype=torch.bool, device=input_ids.device)
-        for _ in range(max_new_tokens):
-            if use_cache and past_key_values is not None and past_key_values[0][0].size(-2) < self.config.context_length:
-                idx_cond = input_ids[:, -1:]
-            else:
-                past_key_values = None
-                idx_cond = input_ids[:, -self.config.context_length :]
-            out = self(idx_cond, past_key_values=past_key_values, use_cache=use_cache)
-            past_key_values = out.past_key_values
-            logits = out.logits[:, -1, :] / temperature
-            if repetition_penalty != 1.0:
-                logits = apply_repetition_penalty(logits, input_ids, penalty=repetition_penalty)
-            logits = filter_logits(logits, top_k=top_k, top_p=top_p, min_p=min_p)
-            if do_sample:
-                probs = F.softmax(logits, dim=-1)
-                next_id = torch.multinomial(probs, num_samples=1, generator=generator)
-            else:
-                next_id = torch.argmax(logits, dim=-1, keepdim=True)
-            if eos_id is not None:
-                next_id = torch.where(finished, torch.full_like(next_id, eos_id), next_id)
-                finished = finished | next_id.eq(eos_id)
-            input_ids = torch.cat([input_ids, next_id], dim=1)
-            if eos_id is not None and torch.all(finished):
-                break
+        for step in self.generate_steps(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            eos_id=eos_id,
+            use_cache=use_cache,
+            do_sample=do_sample,
+            generator=generator,
+        ):
+            input_ids = step.sequences
         return input_ids
 
     def _generate_beam_search(

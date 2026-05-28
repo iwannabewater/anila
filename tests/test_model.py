@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from anila.config import ModelConfig
-from anila.model import AnilaLM, CausalLMOutput, apply_repetition_penalty, filter_logits
+from anila.model import AnilaLM, CausalLMOutput, GenerationStep, apply_repetition_penalty, filter_logits
 
 
 def test_model_forward_and_generate() -> None:
@@ -94,6 +94,22 @@ def test_generate_can_run_greedily_with_modern_filters() -> None:
     )
 
     assert generated.shape == (2, 7)
+
+
+def test_generate_steps_matches_greedy_generate() -> None:
+    cfg = ModelConfig(vocab_size=64, context_length=16, n_layer=1, n_head=4, n_kv_head=2, n_embd=32).validated()
+    model = AnilaLM(cfg)
+    model.eval()
+    x = torch.randint(0, cfg.vocab_size, (2, 4))
+
+    steps = list(model.generate_steps(x, max_new_tokens=3, top_k=10, do_sample=False))
+    generated = model.generate(x, max_new_tokens=3, top_k=10, do_sample=False)
+
+    assert len(steps) == 3
+    assert all(isinstance(step, GenerationStep) for step in steps)
+    assert steps[-1].sequences.tolist() == generated.tolist()
+    assert steps[-1].token_ids.shape == (2, 1)
+    assert steps[-1].token_logprobs.shape == (2, 1)
 
 
 def test_batched_generation_fills_finished_sequences_with_eos() -> None:

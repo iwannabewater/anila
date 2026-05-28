@@ -7,13 +7,13 @@ The repository is intentionally small enough to study and modify, while still us
 ## Features
 
 - Byte-level BPE tokenizer training.
-- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, top-k/top-p sampling, and native beam search.
+- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, streaming steps, top-k/top-p sampling, and native beam search.
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, RNG-preserving validation, checkpointed random state, resume, and atomic saves.
 - Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
-- A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, and sampling.
+- A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, structured generation, streaming, and sampling.
 - Fast unit tests plus end-to-end integration coverage.
 
 ## Requirements
@@ -92,6 +92,15 @@ uv run anila model generate \
   --length-penalty 0.7 \
   --completion-only
 
+# Print structured generation metadata with token logprobs.
+uv run anila model generate \
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "Anila is" \
+  --max-new-tokens 16 \
+  --json \
+  --logprobs
+
 # Print a JSON checkpoint summary.
 uv run anila checkpoint inspect \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt
@@ -116,16 +125,19 @@ Common entry points are exported from the package root for lightweight scripts a
 ```python
 from pathlib import Path
 
-from anila import __version__, load_run_config, sample_text, train, train_byte_bpe
+from anila import generate_text, load_run_config, train, train_byte_bpe
 
 train_byte_bpe([Path("examples/tiny_corpus.txt")], Path("runs/tokenizer"), vocab_size=512, min_frequency=1)
 train(load_run_config(Path("configs/quickstart/pretrain.json")))
-text = sample_text(
+result = generate_text(
     checkpoint=Path("runs/quickstart/pretrain/checkpoints/latest.pt"),
     tokenizer_path=Path("runs/tokenizer"),
     prompt="Anila is",
     max_new_tokens=32,
+    stop_strings=["\n"],
+    return_logprobs=True,
 )
+text = result.text
 ```
 
 Lower-level modules remain importable when extending objectives, data adapters, or model internals. Checkpoint artifact reads in library code should go through Anila's checkpoint helpers rather than ad hoc `torch.load` calls.
@@ -188,7 +200,7 @@ Useful runtime flags in `train`:
 - `fused_adamw`: requests PyTorch fused AdamW on CUDA and falls back to ordinary AdamW elsewhere.
 - `keep_last_checkpoints`: when set, keeps only the most recent N step checkpoints plus `latest.pt` to limit local disk growth.
 
-Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, and deterministic beam search through `num_beams`. In batched single-path generation, rows that emit `eos_id` remain terminal while unfinished rows continue.
+Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, streaming single-path steps, and deterministic beam search through `num_beams`. In batched single-path generation, rows that emit `eos_id` remain terminal while unfinished rows continue. The sampling API layers text-level stop strings, structured generation metadata, optional token logprobs, and `stream_text` on top of the native model loop without changing the default `sample_text` string return.
 
 ## Data Modes
 

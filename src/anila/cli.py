@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -11,7 +12,7 @@ from anila._version import __version__
 from anila.checkpoint import inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
 from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
-from anila.sampling import sample_text
+from anila.sampling import generate_text, sample_text, stream_text
 from anila.tokenization import train_byte_bpe
 from anila.training import train
 
@@ -97,6 +98,10 @@ def sample(
     do_sample: Annotated[bool, typer.Option("--sample/--greedy")] = True,
     seed: Annotated[int | None, typer.Option("--seed")] = None,
     return_full_text: Annotated[bool, typer.Option("--full-text/--completion-only")] = True,
+    stop: Annotated[list[str] | None, typer.Option("--stop", help="Stop when this text appears in the completion.")] = None,
+    return_logprobs: Annotated[bool, typer.Option("--logprobs", help="Include generated token logprobs in JSON output.")] = False,
+    json_output: Annotated[bool, typer.Option("--json/--text", help="Print structured generation metadata as JSON.")] = False,
+    stream: Annotated[bool, typer.Option("--stream/--no-stream", help="Stream generated text chunks as they are decoded.")] = False,
 ) -> None:
     """Generate text from a checkpoint."""
     if top_k < 0:
@@ -105,6 +110,55 @@ def sample(
         raise typer.BadParameter("num_beams must be positive", param_hint="--num-beams")
     if length_penalty < 0:
         raise typer.BadParameter("length_penalty cannot be negative", param_hint="--length-penalty")
+    if stream and num_beams > 1:
+        raise typer.BadParameter("streaming generation is only supported with --num-beams 1", param_hint="--stream")
+    if stream and json_output:
+        raise typer.BadParameter("--stream cannot be combined with --json", param_hint="--stream")
+    if return_logprobs and not json_output:
+        raise typer.BadParameter("--logprobs requires --json", param_hint="--logprobs")
+    if stream:
+        if return_full_text:
+            typer.echo(prompt, nl=False)
+        for chunk in stream_text(
+            checkpoint=checkpoint,
+            tokenizer_path=tokenizer,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=None if top_k == 0 else top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            device=device,
+            do_sample=do_sample,
+            seed=seed,
+            stop_strings=stop,
+        ):
+            typer.echo(chunk, nl=False)
+        typer.echo()
+        return
+    if json_output:
+        result = generate_text(
+            checkpoint=checkpoint,
+            tokenizer_path=tokenizer,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=None if top_k == 0 else top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            num_beams=num_beams,
+            length_penalty=length_penalty,
+            device=device,
+            do_sample=do_sample,
+            seed=seed,
+            return_full_text=return_full_text,
+            stop_strings=stop,
+            return_logprobs=return_logprobs,
+        )
+        typer.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
+        return
     text = sample_text(
         checkpoint=checkpoint,
         tokenizer_path=tokenizer,
@@ -121,6 +175,7 @@ def sample(
         do_sample=do_sample,
         seed=seed,
         return_full_text=return_full_text,
+        stop_strings=stop,
     )
     typer.echo(text)
 

@@ -70,6 +70,15 @@ uv run anila model generate \
   --length-penalty 0.7 \
   --completion-only
 
+# Inspect structured generation metadata and token logprobs.
+uv run anila model generate \
+  --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "Anila is" \
+  --max-new-tokens 16 \
+  --json \
+  --logprobs
+
 # Inspect checkpoint metadata as JSON.
 uv run anila checkpoint inspect \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt
@@ -105,7 +114,7 @@ The pretraining quickstart uses `data.pretrain_mode = "packed"`. The default rem
 
 ## Python API
 
-The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, checkpoint inspection/merge helpers, and evaluation functions. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
+The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `stream_text`, checkpoint inspection/merge helpers, and evaluation functions. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
 
 ## Runtime Flags
 
@@ -122,7 +131,7 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 
 The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment.
 
-The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, `--num-beams`, `--length-penalty`, and `--full-text/--completion-only`.
+The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, `--num-beams`, `--length-penalty`, and `--full-text/--completion-only`. It also supports repeated `--stop` strings, `--json` structured output, `--logprobs` for generated-token logprobs in JSON output, and `--stream` for single-path streaming generation.
 
 ## Checkpoint Contract
 

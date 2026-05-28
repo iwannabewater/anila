@@ -17,7 +17,7 @@ from anila.config import (
 from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
 from anila.model import AnilaLM
 from anila.reward import RewardModel
-from anila.sampling import sample_text
+from anila.sampling import GeneratedText, GeneratedToken, generate_text, sample_text, stream_text
 from anila.tokenization import train_byte_bpe
 from anila.training import train
 
@@ -27,6 +27,8 @@ __all__ = [
     "DPOConfig",
     "DistillConfig",
     "GRPOConfig",
+    "GeneratedText",
+    "GeneratedToken",
     "LoRAConfig",
     "ModelConfig",
     "PPOConfig",
@@ -39,10 +41,12 @@ __all__ = [
     "evaluate_lm_checkpoint",
     "evaluate_policy_preferences",
     "evaluate_reward_model",
+    "generate_text",
     "inspect_checkpoint",
     "load_run_config",
     "merge_lora_checkpoint",
     "sample_text",
+    "stream_text",
     "train",
     "train_byte_bpe",
 ]
