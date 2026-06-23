@@ -12,6 +12,7 @@ from anila.config import (
     GRPOConfig,
     LoRAConfig,
     ModelConfig,
+    OPDConfig,
     PPOConfig,
     RewardConfig,
     RunConfig,
@@ -70,6 +71,7 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     assert set(payload["ema_model"]) == set(payload["model"])
     assert "rng_state" in payload
     assert "data_state" in payload
+    assert "opd_config" not in payload["data_state"]["contract"]
     snapshot = json.loads(config_snapshot.read_text(encoding="utf-8"))
     assert snapshot["train"]["objective"] == "pretrain"
     assert snapshot["data"]["pretrain_mode"] == "packed"
@@ -360,6 +362,85 @@ def test_tiny_soft_distillation_training_integration(tmp_path: Path) -> None:
     assert payload["objective"] == "distill"
     assert payload["distill_config"]["mode"] == "soft"
     assert payload["distill_config"]["data_objective"] == "pretrain"
+
+
+def test_tiny_on_policy_distillation_training_integration(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(
+        "User: What does Anila train?\nAssistant: Small causal language models.\n" * 80,
+        encoding="utf-8",
+    )
+    tokenizer_dir = tmp_path / "tokenizer"
+    train_byte_bpe([corpus], tokenizer_dir, vocab_size=300, min_frequency=1)
+
+    sft_data = tmp_path / "sft.jsonl"
+    sft_data.write_text(
+        '{"prompt": "What does Anila train?", "response": "Small causal language models."}\n'
+        '{"prompt": "How are checkpoints saved?", "response": "Atomically."}\n',
+        encoding="utf-8",
+    )
+    prompt_data = tmp_path / "prompts.jsonl"
+    prompt_data.write_text(
+        '{"prompt": "What does Anila train?"}\n'
+        '{"prompt": "How are checkpoints saved?"}\n',
+        encoding="utf-8",
+    )
+
+    teacher_run = RunConfig(
+        model=ModelConfig(vocab_size=300, context_length=64, n_layer=1, n_head=2, n_kv_head=1, n_embd=32),
+        train=TrainConfig(
+            objective="sft",
+            dataset_path=str(sft_data),
+            tokenizer_path=str(tokenizer_dir),
+            out_dir=str(tmp_path / "teacher-run"),
+            batch_size=2,
+            max_steps=1,
+            warmup_steps=1,
+            eval_interval=1,
+            save_interval=1,
+            log_interval=1,
+            device="cpu",
+            dtype="float32",
+        ),
+        sft=SFTConfig(format="auto"),
+    )
+    Trainer(teacher_run).train()
+
+    teacher_checkpoint = tmp_path / "teacher-run" / "checkpoints" / "latest.pt"
+    student_run = RunConfig(
+        model=ModelConfig(vocab_size=300, context_length=64, n_layer=1, n_head=2, n_kv_head=1, n_embd=32),
+        train=TrainConfig(
+            objective="opd",
+            init_from=str(teacher_checkpoint),
+            dataset_path=str(prompt_data),
+            tokenizer_path=str(tokenizer_dir),
+            out_dir=str(tmp_path / "opd-run"),
+            batch_size=1,
+            max_steps=2,
+            warmup_steps=1,
+            eval_interval=2,
+            save_interval=2,
+            log_interval=1,
+            device="cpu",
+            dtype="float32",
+        ),
+        opd=OPDConfig(
+            teacher_checkpoint=str(teacher_checkpoint),
+            num_rollouts=1,
+            max_new_tokens=2,
+            temperature=1.0,
+            top_k=20,
+            kl_weight=1.0,
+            ce_weight=0.0,
+        ),
+    )
+    Trainer(student_run).train()
+    payload = torch.load(tmp_path / "opd-run" / "checkpoints" / "latest.pt", map_location="cpu")
+
+    assert payload["objective"] == "opd"
+    assert payload["opd_config"]["teacher_checkpoint"] == str(teacher_checkpoint)
+    assert payload["opd_config"]["num_rollouts"] == 1
+    assert payload["data_state"]["contract"]["opd_config"]["teacher_checkpoint"] == str(teacher_checkpoint)
 
 
 def test_tiny_dpo_training_integration(tmp_path: Path) -> None:

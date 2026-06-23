@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from anila.config import DistillConfig, ModelConfig
+from anila.config import DistillConfig, ModelConfig, OPDConfig
 from anila.data import IGNORE_INDEX
-from anila.distillation import soft_distillation_loss
+from anila.distillation import on_policy_distillation_loss, soft_distillation_loss
 from anila.model import AnilaLM
 
 
@@ -13,6 +13,17 @@ def test_soft_distillation_loss_is_zero_for_identical_logits_without_ce() -> Non
     cfg = DistillConfig(mode="soft", teacher_checkpoint="teacher.pt", ce_weight=0.0, kl_weight=1.0)
 
     loss = soft_distillation_loss(logits, logits, labels, cfg)
+
+    assert loss.kl_loss.item() == pytest.approx(0.0, abs=1e-6)
+    assert loss.loss.item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_on_policy_distillation_loss_matches_teacher_on_rollout_tokens() -> None:
+    logits = torch.randn(2, 3, 7)
+    labels = torch.tensor([[IGNORE_INDEX, 2, 3], [IGNORE_INDEX, IGNORE_INDEX, 5]])
+    cfg = OPDConfig(teacher_checkpoint="teacher.pt", ce_weight=0.0, kl_weight=1.0)
+
+    loss = on_policy_distillation_loss(logits, logits, labels, cfg)
 
     assert loss.kl_loss.item() == pytest.approx(0.0, abs=1e-6)
     assert loss.loss.item() == pytest.approx(0.0, abs=1e-6)

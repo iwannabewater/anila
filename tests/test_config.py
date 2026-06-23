@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from anila.config import DataConfig, ModelConfig, RewardConfig, TrainConfig, load_run_config
+from anila.config import DataConfig, ModelConfig, OPDConfig, RewardConfig, TrainConfig, load_run_config
 
 
 def test_model_config_fills_kv_heads() -> None:
@@ -56,6 +56,7 @@ def test_quickstart_configs_are_loadable() -> None:
         "grpo-learned-reward.json",
         "grpo-rule-reward.json",
         "lora-sft.json",
+        "opd.json",
         "ppo-learned-reward.json",
         "ppo-rule-reward.json",
         "pretrain.json",
@@ -82,6 +83,7 @@ def test_load_sft_run_config(tmp_path: Path) -> None:
           "distill": {"mode": "hard", "data_objective": "sft"},
           "dpo": {"beta": 0.2},
           "grpo": {"num_generations": 2, "max_new_tokens": 8},
+          "opd": {"teacher_checkpoint": "teacher.pt", "num_rollouts": 2, "max_new_tokens": 8},
           "ppo": {"num_rollouts": 2, "max_new_tokens": 8},
           "reward": {"scorer": "rule", "scale": 1.5},
           "sft": {"format": "auto"}
@@ -102,6 +104,9 @@ def test_load_sft_run_config(tmp_path: Path) -> None:
     assert cfg.dpo.beta == 0.2
     assert cfg.grpo.num_generations == 2
     assert cfg.grpo.max_new_tokens == 8
+    assert cfg.opd.teacher_checkpoint == "teacher.pt"
+    assert cfg.opd.num_rollouts == 2
+    assert cfg.opd.max_new_tokens == 8
     assert cfg.ppo.num_rollouts == 2
     assert cfg.ppo.max_new_tokens == 8
     assert cfg.reward.scorer == "rule"
@@ -130,6 +135,30 @@ def test_soft_distill_config_requires_teacher(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="teacher_checkpoint"):
         load_run_config(path)
+
+
+def test_opd_config_requires_teacher_when_objective_is_opd(tmp_path: Path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        """
+        {
+          "train": {
+            "objective": "opd",
+            "dataset_path": "prompts.jsonl",
+            "tokenizer_path": "tokenizer"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="opd.teacher_checkpoint"):
+        load_run_config(path)
+
+
+def test_opd_config_validates_rollout_settings() -> None:
+    with pytest.raises(ValueError, match="opd.num_rollouts"):
+        OPDConfig(teacher_checkpoint="teacher.pt", num_rollouts=0).validated()
 
 
 def test_reward_model_scorer_requires_checkpoint() -> None:

@@ -1,6 +1,6 @@
 # Full-Flow Quickstart
 
-This guide is the beginner path through Anila's local LLM workflow. It starts with a tokenizer and tiny local data, then walks through pretraining, supervised fine-tuning, adapter fine-tuning, distillation, preference optimization, reward modeling, online RL, evaluation, artifact export, and efficient native inference.
+This guide is the beginner path through Anila's local LLM workflow. It starts with a tokenizer and tiny local data, then walks through pretraining, supervised fine-tuning, adapter fine-tuning, distillation, on-policy distillation, preference optimization, reward modeling, online RL, evaluation, artifact export, and efficient native inference.
 
 The configs are intentionally small. They are for learning the flow and checking contracts, not for producing a capable model.
 
@@ -15,6 +15,7 @@ Before replacing the example files with your own data, read [Data Contracts](dat
 | SFT | `configs/quickstart/sft.json` | prompt/response JSONL | instruction checkpoint |
 | LoRA SFT | `configs/quickstart/lora-sft.json` | SFT JSONL plus base checkpoint | full checkpoint plus adapter checkpoint |
 | Distillation | `distill-hard-sft.json`, `distill-soft-pretrain.json` | hard labels or teacher logits | student checkpoint |
+| OPD | `configs/quickstart/opd.json` | prompt JSONL plus teacher checkpoint | on-policy distilled checkpoint |
 | DPO | `configs/quickstart/dpo.json` | prompt/chosen/rejected JSONL | preference-tuned checkpoint |
 | Reward model | `configs/quickstart/reward-model.json` | prompt/chosen/rejected JSONL | scalar reward checkpoint |
 | GRPO/PPO | rule or learned reward configs | prompt JSONL plus policy checkpoint | RL-tuned checkpoints |
@@ -97,7 +98,15 @@ Soft-logit distillation loads the native pretraining checkpoint as a teacher:
 uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
 ```
 
-## 7. Run Preference Optimization
+## 7. Run On-Policy Distillation
+
+```bash
+uv run anila model train --config configs/quickstart/opd.json
+```
+
+OPD reads `examples/tiny_opd_prompts.jsonl`, samples responses from the current student policy, and trains on teacher-logit feedback from the SFT checkpoint over those student-generated response tokens. This demonstrates the on-policy post-training shape without introducing a separate serving framework.
+
+## 8. Run Preference Optimization
 
 ```bash
 uv run anila model train --config configs/quickstart/dpo.json
@@ -105,7 +114,7 @@ uv run anila model train --config configs/quickstart/dpo.json
 
 DPO uses `examples/tiny_preferences.jsonl`, compares chosen and rejected responses, and regularizes against a frozen reference model. If the DPO config omits `dpo.reference_checkpoint`, Anila uses `train.init_from` as the reference checkpoint.
 
-## 8. Train A Reward Model
+## 9. Train A Reward Model
 
 ```bash
 uv run anila model train --config configs/quickstart/reward-model.json
@@ -113,7 +122,7 @@ uv run anila model train --config configs/quickstart/reward-model.json
 
 Reward-model training uses the same chosen/rejected preference records, but trains a scalar reward head. The resulting checkpoint can score generated responses for online RL.
 
-## 9. Run Online RL
+## 10. Run Online RL
 
 Start with a simple rule reward:
 
@@ -131,7 +140,7 @@ uv run anila model train --config configs/quickstart/ppo-learned-reward.json
 
 GRPO samples groups of responses per prompt and normalizes rewards inside the group. PPO samples rollouts, applies reference KL penalties, estimates advantages with a value head, and keeps the base LM checkpoint directly sampleable.
 
-## 10. Evaluate And Benchmark
+## 11. Evaluate And Benchmark
 
 Language-model loss and perplexity:
 
@@ -176,7 +185,7 @@ uv run anila model benchmark \
 
 Use `--ema` on evaluation or benchmark commands when the checkpoint contains EMA weights and you want to evaluate that snapshot.
 
-## 11. Export Optional Tensor Artifacts
+## 12. Export Optional Tensor Artifacts
 
 ```bash
 uv run anila checkpoint export-safetensors \
@@ -186,7 +195,7 @@ uv run anila checkpoint export-safetensors \
 
 This writes tensor-only safetensors plus an Anila manifest. It is an export adapter. Native training, resume, sampling, and evaluation continue to use restricted `.pt` checkpoint payloads.
 
-## 12. Generate Efficiently
+## 13. Generate Efficiently
 
 Default generation uses the native KV cache:
 
@@ -247,7 +256,7 @@ uv run anila model generate \
 - Change optimization and runtime settings in the `train` section.
 - Change pretraining data behavior in the `data` section.
 - Change SFT record handling in the `sft` section.
-- Change preference and RL behavior in `dpo`, `reward`, `grpo`, and `ppo`.
+- Change preference, OPD, and RL behavior in `opd`, `dpo`, `reward`, `grpo`, and `ppo`.
 - Add optional ecosystem formats as adapters instead of changing native checkpoint loading.
 
 ## Verification Before Sharing Changes

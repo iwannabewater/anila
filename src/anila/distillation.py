@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from anila.checkpoint import load_checkpoint_payload
-from anila.config import DistillConfig, LoRAConfig, ModelConfig
+from anila.config import DistillConfig, LoRAConfig, ModelConfig, OPDConfig
 from anila.data import IGNORE_INDEX
 from anila.model import AnilaLM
 from anila.peft import apply_lora
@@ -27,6 +27,42 @@ def soft_distillation_loss(
     config: DistillConfig,
 ) -> DistillationLoss:
     cfg = config.validated()
+    return _masked_distillation_loss(
+        student_logits,
+        teacher_logits,
+        labels,
+        temperature=cfg.temperature,
+        kl_weight=cfg.kl_weight,
+        ce_weight=cfg.ce_weight,
+    )
+
+
+def on_policy_distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    config: OPDConfig,
+) -> DistillationLoss:
+    cfg = config.validated()
+    return _masked_distillation_loss(
+        student_logits,
+        teacher_logits,
+        labels,
+        temperature=cfg.distill_temperature,
+        kl_weight=cfg.kl_weight,
+        ce_weight=cfg.ce_weight,
+    )
+
+
+def _masked_distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    temperature: float,
+    kl_weight: float,
+    ce_weight: float,
+) -> DistillationLoss:
     if student_logits.shape != teacher_logits.shape:
         raise ValueError(
             f"student and teacher logits must have identical shape, got "
@@ -42,12 +78,11 @@ def soft_distillation_loss(
         labels.reshape(-1),
         ignore_index=IGNORE_INDEX,
     )
-    temperature = cfg.temperature
     student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
     teacher_probs = F.softmax(teacher_logits.detach() / temperature, dim=-1)
     per_token_kl = F.kl_div(student_log_probs, teacher_probs, reduction="none").sum(dim=-1) * (temperature**2)
     kl_loss = per_token_kl.masked_select(mask).mean()
-    loss = (cfg.ce_weight * ce_loss) + (cfg.kl_weight * kl_loss)
+    loss = (ce_weight * ce_loss) + (kl_weight * kl_loss)
     return DistillationLoss(loss=loss, ce_loss=ce_loss, kl_loss=kl_loss)
 
 

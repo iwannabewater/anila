@@ -9,7 +9,7 @@ The repository is intentionally small enough to study and modify, while still us
 - Byte-level BPE tokenizer training.
 - GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, streaming steps, top-k/top-p sampling, and native beam search.
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, optional EMA weights, RNG-preserving validation, checkpointed random state, resume, and atomic saves.
-- Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
+- Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, on-policy distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
@@ -25,7 +25,7 @@ The repository is intentionally small enough to study and modify, while still us
 
 ## Quick Start
 
-For a staged walkthrough from tokenizer training through post-training, RL, evaluation, export, and inference, see [Full-Flow Quickstart](docs/full-flow-quickstart.md).
+For a staged walkthrough from tokenizer training through post-training, OPD, RL, evaluation, export, and inference, see [Full-Flow Quickstart](docs/full-flow-quickstart.md).
 
 ```bash
 # Install the package, runtime dependencies, and development tools.
@@ -56,6 +56,9 @@ uv run anila model train --config configs/quickstart/distill-hard-sft.json
 
 # Train soft-logit distillation from the pretraining checkpoint.
 uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
+
+# Train on-policy distillation from student-generated prompt rollouts.
+uv run anila model train --config configs/quickstart/opd.json
 
 # Train DPO preference optimization from the SFT checkpoint.
 uv run anila model train --config configs/quickstart/dpo.json
@@ -189,7 +192,7 @@ src/anila/
   config.py        typed JSON/TOML config loading and validation
   tokenization.py  byte-level BPE tokenizer training/loading
   data.py          tokenized text datasets and dataloaders
-  distillation.py  teacher loading and soft-logit distillation loss
+  distillation.py  teacher loading and masked distillation losses
   dpo.py           DPO preference optimization
   grpo.py          GRPO reward utilities and loss
   model.py         native PyTorch GPT model
@@ -217,12 +220,13 @@ Run configs live under `configs/` and contain these top-level sections:
 - `lora`: optional adapter configuration.
 - `distill`: optional hard or soft distillation settings.
 - `dpo`: optional Direct Preference Optimization settings.
+- `opd`: optional On-Policy Distillation settings.
 - `grpo`: optional Group Relative Policy Optimization settings.
 - `ppo`: optional Proximal Policy Optimization settings.
 - `reward`: optional reward scorer and reward-model data settings.
 - `sft`: supervised fine-tuning record formatting settings.
 
-See `configs/quickstart/pretrain.json` for pretraining, `configs/quickstart/sft.json` for full-model supervised fine-tuning, `configs/quickstart/lora-sft.json` for LoRA SFT, `configs/quickstart/distill-hard-sft.json` for hard distillation, `configs/quickstart/distill-soft-pretrain.json` for soft-logit distillation, `configs/quickstart/dpo.json` for DPO, `configs/quickstart/reward-model.json` for reward model training, `configs/quickstart/grpo-rule-reward.json` and `configs/quickstart/ppo-rule-reward.json` for rule-reward RL, and `configs/quickstart/grpo-learned-reward.json` plus `configs/quickstart/ppo-learned-reward.json` for learned-reward RL.
+See `configs/quickstart/pretrain.json` for pretraining, `configs/quickstart/sft.json` for full-model supervised fine-tuning, `configs/quickstart/lora-sft.json` for LoRA SFT, `configs/quickstart/distill-hard-sft.json` for hard distillation, `configs/quickstart/distill-soft-pretrain.json` for soft-logit distillation, `configs/quickstart/opd.json` for on-policy distillation, `configs/quickstart/dpo.json` for DPO, `configs/quickstart/reward-model.json` for reward model training, `configs/quickstart/grpo-rule-reward.json` and `configs/quickstart/ppo-rule-reward.json` for rule-reward RL, and `configs/quickstart/grpo-learned-reward.json` plus `configs/quickstart/ppo-learned-reward.json` for learned-reward RL.
 
 Useful runtime flags in `train`:
 
@@ -267,6 +271,7 @@ Use `streaming` when the corpus is too large to hold as one token tensor:
 - `pretrain`: default objective. Trains next-token prediction on one or more plain-text files.
 - `sft`: supervised fine-tuning objective. Reads JSONL records and masks prompt/user/system tokens so only assistant response tokens contribute to loss.
 - `distill`: distillation objective. In `hard` mode, trains on teacher-generated hard labels through the configured data objective. In `soft` mode, loads a teacher checkpoint and trains with masked KL divergence, optionally mixed with CE loss.
+- `opd`: on-policy distillation objective. Reads prompt JSONL records, samples responses from the current student policy, and matches a teacher checkpoint's token distributions on those student-generated trajectories.
 - `dpo`: preference optimization objective. Reads JSONL prompt/chosen/rejected records, scores chosen and rejected response tokens under policy and reference models, and applies DPO loss.
 - `reward_model`: trains a scalar reward model from prompt/chosen/rejected preference records with a pairwise Bradley-Terry loss.
 - `grpo`: online policy optimization objective. Reads JSONL prompt records, samples a group of responses per prompt, scores them with a rule or learned reward scorer, normalizes rewards within each prompt group, and applies clipped GRPO loss with reference KL.
@@ -390,6 +395,34 @@ Soft distillation loads a native Anila teacher checkpoint and matches its logits
     "ce_weight": 0.5
   }
 }
+```
+
+## On-Policy Distillation
+
+OPD trains on states sampled from the current student policy rather than a static teacher-generated dataset. Anila reads prompt JSONL records, lets the student generate one or more continuations, then matches a native teacher checkpoint's token distributions on the generated response tokens.
+
+```json
+{
+  "train": {
+    "objective": "opd",
+    "init_from": "runs/quickstart/pretrain/checkpoints/latest.pt",
+    "dataset_path": "examples/tiny_opd_prompts.jsonl"
+  },
+  "opd": {
+    "teacher_checkpoint": "runs/quickstart/sft/checkpoints/latest.pt",
+    "num_rollouts": 1,
+    "max_new_tokens": 16,
+    "distill_temperature": 2.0,
+    "kl_weight": 1.0,
+    "ce_weight": 0.1
+  }
+}
+```
+
+Prompt records use the same prompt/system shape as RL prompt data:
+
+```json
+{"system": "You are a concise assistant.", "prompt": "What does Anila train?"}
 ```
 
 ## DPO

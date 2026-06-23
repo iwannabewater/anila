@@ -153,20 +153,27 @@ Failure conditions:
 - `reward.scorer = "model"` is configured without `reward.checkpoint`.
 - `reward.scale` is zero.
 
-## GRPO And PPO Prompt Data
+## OPD, GRPO, And PPO Prompt Data
 
 Used by:
 
+- `train.objective = "opd"`
 - `train.objective = "grpo"`
 - `train.objective = "ppo"`
 
-Rule-reward records include a prompt and an expected string:
+OPD records can be prompt-only because the teacher checkpoint supplies token-level feedback on student-generated continuations:
+
+```json
+{"system": "You are a concise assistant.", "prompt": "What does Anila train?"}
+```
+
+Rule-reward records for GRPO/PPO include a prompt and an expected string:
 
 ```json
 {"system": "You are a concise assistant.", "prompt": "What does Anila train?", "expected": "language models"}
 ```
 
-Learned-reward records can omit `expected` because the reward model scores generated responses:
+Learned-reward GRPO/PPO records can omit `expected` because the reward model scores generated responses:
 
 ```json
 {"prompt": "How are checkpoints saved?"}
@@ -176,9 +183,10 @@ Default keys:
 
 | Config field | Default |
 | --- | --- |
-| `grpo.prompt_key` / `ppo.prompt_key` | `prompt` |
-| `grpo.expected_key` / `ppo.expected_key` | `expected` |
-| `grpo.system_key` / `ppo.system_key` | `system` |
+| `opd.prompt_key` / `grpo.prompt_key` / `ppo.prompt_key` | `prompt` |
+| `opd.expected_key` / `grpo.expected_key` / `ppo.expected_key` | `expected` |
+| `opd.system_key` / `grpo.system_key` / `ppo.system_key` | `system` |
+| `opd.teacher_checkpoint` | required for OPD |
 
 Prompt construction:
 
@@ -190,11 +198,14 @@ Assistant:
 
 The system line is omitted when the record has no system field.
 
+OPD ignores `expected` when it is present. It samples `opd.num_rollouts` student responses, masks the prompt prefix, and distills only generated response tokens against `opd.teacher_checkpoint`.
+
 Failure conditions:
 
 - `prompt` is missing or empty.
 - `expected` is present but empty.
 - The prompt prefix exceeds `model.context_length` tokens before generation starts.
+- OPD is configured without `opd.teacher_checkpoint`.
 
 ## Distillation Data
 

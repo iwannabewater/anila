@@ -51,9 +51,10 @@ uv run anila model train --config configs/quickstart/pretrain.json
 uv run anila model train --config configs/quickstart/sft.json
 uv run anila model train --config configs/quickstart/lora-sft.json
 
-# Exercise distillation, preference, reward, and online RL objectives.
+# Exercise distillation, OPD, preference, reward, and online RL objectives.
 uv run anila model train --config configs/quickstart/distill-hard-sft.json
 uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
+uv run anila model train --config configs/quickstart/opd.json
 uv run anila model train --config configs/quickstart/dpo.json
 uv run anila model train --config configs/quickstart/reward-model.json
 uv run anila model train --config configs/quickstart/grpo-rule-reward.json
@@ -169,7 +170,7 @@ The CLI generation path exposes sampling and deterministic modes through `--samp
 Training checkpoints are ordinary `torch.save` dictionaries:
 
 - `schema_version`: checkpoint schema version.
-- `objective`: training objective, currently `pretrain`, `sft`, `distill`, `dpo`, `reward_model`, `grpo`, or `ppo`.
+- `objective`: training objective, currently `pretrain`, `sft`, `distill`, `opd`, `dpo`, `reward_model`, `grpo`, or `ppo`.
 - `model`: model state dict.
 - `model_config`: model config as plain data.
 - `train_config`: train config as plain data.
@@ -179,6 +180,7 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `adapter_checkpoint`: adapter-only checkpoint path when LoRA adapter saving is enabled.
 - `distill_config`: distillation config as plain data.
 - `dpo_config`: DPO config as plain data.
+- `opd_config`: on-policy distillation config as plain data.
 - `grpo_config`: GRPO config as plain data.
 - `ppo_config`: PPO config as plain data.
 - `reward_config`: reward scorer and reward model config as plain data.

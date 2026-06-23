@@ -8,7 +8,7 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
-SUPPORTED_OBJECTIVES = {"pretrain", "sft", "distill", "dpo", "grpo", "ppo", "reward_model"}
+SUPPORTED_OBJECTIVES = {"pretrain", "sft", "distill", "dpo", "opd", "grpo", "ppo", "reward_model"}
 SUPPORTED_DATA_OBJECTIVES = {"pretrain", "sft"}
 SUPPORTED_PRETRAIN_DATA_MODES = {"sliding_window", "packed", "streaming"}
 
@@ -221,6 +221,51 @@ class DistillConfig:
 
 
 @dataclass(frozen=True)
+class OPDConfig:
+    teacher_checkpoint: str | None = None
+    prompt_key: str = "prompt"
+    expected_key: str = "expected"
+    system_key: str = "system"
+    num_rollouts: int = 1
+    max_new_tokens: int = 32
+    temperature: float = 0.8
+    top_k: int | None = 50
+    top_p: float = 1.0
+    distill_temperature: float = 2.0
+    kl_weight: float = 1.0
+    ce_weight: float = 0.0
+
+    def validated(self) -> OPDConfig:
+        if self.teacher_checkpoint is not None and (
+            not isinstance(self.teacher_checkpoint, str) or not self.teacher_checkpoint
+        ):
+            raise ValueError("opd.teacher_checkpoint must be a non-empty string")
+        for name in ("prompt_key", "expected_key", "system_key"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"opd.{name} must be a non-empty string")
+        if self.num_rollouts <= 0:
+            raise ValueError("opd.num_rollouts must be positive")
+        if self.max_new_tokens <= 0:
+            raise ValueError("opd.max_new_tokens must be positive")
+        if self.temperature <= 0:
+            raise ValueError("opd.temperature must be positive")
+        if self.top_k is not None and self.top_k <= 0:
+            raise ValueError("opd.top_k must be positive when provided")
+        if not 0.0 < self.top_p <= 1.0:
+            raise ValueError("opd.top_p must be in (0, 1]")
+        if self.distill_temperature <= 0:
+            raise ValueError("opd.distill_temperature must be positive")
+        if self.kl_weight < 0:
+            raise ValueError("opd.kl_weight cannot be negative")
+        if self.ce_weight < 0:
+            raise ValueError("opd.ce_weight cannot be negative")
+        if self.kl_weight == 0 and self.ce_weight == 0:
+            raise ValueError("at least one of opd.kl_weight or opd.ce_weight must be positive")
+        return self
+
+
+@dataclass(frozen=True)
 class DPOConfig:
     beta: float = 0.1
     reference_checkpoint: str | None = None
@@ -413,6 +458,7 @@ class RunConfig:
     lora: LoRAConfig = field(default_factory=LoRAConfig)
     distill: DistillConfig = field(default_factory=DistillConfig)
     dpo: DPOConfig = field(default_factory=DPOConfig)
+    opd: OPDConfig = field(default_factory=OPDConfig)
     grpo: GRPOConfig = field(default_factory=GRPOConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -459,7 +505,9 @@ def load_mapping(path: str | Path) -> dict[str, Any]:
 
 def load_run_config(path: str | Path) -> RunConfig:
     data = load_mapping(path)
-    unknown = sorted(set(data) - {"model", "train", "data", "lora", "distill", "dpo", "grpo", "ppo", "reward", "sft"})
+    unknown = sorted(
+        set(data) - {"model", "train", "data", "lora", "distill", "dpo", "opd", "grpo", "ppo", "reward", "sft"}
+    )
     if unknown:
         raise ValueError(f"Unknown top-level config section(s): {', '.join(unknown)}")
     if "train" not in data:
@@ -471,10 +519,13 @@ def load_run_config(path: str | Path) -> RunConfig:
     lora = _dataclass_from_mapping(LoRAConfig, data.get("lora", {}), section="lora").validated()
     distill = _dataclass_from_mapping(DistillConfig, data.get("distill", {}), section="distill").validated()
     dpo = _dataclass_from_mapping(DPOConfig, data.get("dpo", {}), section="dpo").validated()
+    opd = _dataclass_from_mapping(OPDConfig, data.get("opd", {}), section="opd").validated()
     grpo = _dataclass_from_mapping(GRPOConfig, data.get("grpo", {}), section="grpo").validated()
     ppo = _dataclass_from_mapping(PPOConfig, data.get("ppo", {}), section="ppo").validated()
     reward = _dataclass_from_mapping(RewardConfig, data.get("reward", {}), section="reward").validated()
     sft = _dataclass_from_mapping(SFTConfig, data.get("sft", {}), section="sft").validated()
+    if train.objective == "opd" and not opd.teacher_checkpoint:
+        raise ValueError("opd.teacher_checkpoint is required when train.objective is opd")
     return RunConfig(
         model=model,
         train=train,
@@ -482,6 +533,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         lora=lora,
         distill=distill,
         dpo=dpo,
+        opd=opd,
         grpo=grpo,
         ppo=ppo,
         reward=reward,

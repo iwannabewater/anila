@@ -34,7 +34,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `config`: parses JSON/TOML configs, applies defaults, and rejects unknown keys.
 - `tokenization`: trains and loads byte-level BPE tokenizers.
 - `data`: strictly decodes UTF-8 input and builds sliding-window, packed, or streaming next-token prediction examples from text corpora plus response-masked SFT examples from JSONL records.
-- `distillation`: loads native teacher checkpoints and computes masked soft-logit distillation loss.
+- `distillation`: loads native teacher checkpoints and computes masked soft-logit and on-policy distillation losses.
 - `dpo`: computes response sequence logprobs and Direct Preference Optimization loss.
 - `grpo`: computes group-relative advantages and clipped GRPO loss with reference KL.
 - `ppo`: adds a value head wrapper, token-level rollout accounting, GAE, and clipped PPO policy/value loss.
@@ -61,6 +61,7 @@ RunConfig --------> objective-aware Trainer --------> CheckpointManager
 - `pretrain` consumes plain text and trains all next-token targets.
 - `sft` consumes JSONL records and sets non-assistant labels to `-100`, so prompt/user/system tokens do not contribute to loss.
 - `distill` can run hard-label distillation over pretraining or SFT data, or soft-logit distillation against a teacher checkpoint.
+- `opd` consumes prompt JSONL records, samples responses from the current student policy, masks prompt tokens, and distills generated response tokens against a native teacher checkpoint.
 - `dpo` consumes prompt/chosen/rejected JSONL records and compares policy log-ratios against a frozen reference model.
 - `reward_model` consumes prompt/chosen/rejected JSONL records, scores chosen and rejected response spans with a scalar reward head, and trains with pairwise Bradley-Terry loss.
 - `grpo` consumes prompt JSONL records, samples multiple responses per prompt, computes rule or learned-model rewards, normalizes advantages per prompt group, and regularizes against a frozen reference model.

@@ -21,6 +21,7 @@ uv run anila checkpoint merge-lora \
 
 uv run anila model train --config configs/quickstart/distill-hard-sft.json
 uv run anila model train --config configs/quickstart/distill-soft-pretrain.json
+uv run anila model train --config configs/quickstart/opd.json
 uv run anila model train --config configs/quickstart/dpo.json
 uv run anila model train --config configs/quickstart/reward-model.json
 uv run anila model train --config configs/quickstart/grpo-rule-reward.json

@@ -19,7 +19,7 @@ from rich.console import Console
 from anila.checkpoint import load_checkpoint_payload
 from anila.config import LoRAConfig, RunConfig, TrainConfig
 from anila.data import IGNORE_INDEX, create_dataloader
-from anila.distillation import load_teacher_model, soft_distillation_loss
+from anila.distillation import load_teacher_model, on_policy_distillation_loss, soft_distillation_loss
 from anila.dpo import dpo_loss, sequence_logprobs
 from anila.grpo import group_advantages, grpo_loss
 from anila.model import AnilaLM
@@ -346,6 +346,10 @@ class Trainer:
             if self.config.distill.teacher_checkpoint is None:
                 raise ValueError("distill.teacher_checkpoint is required for soft distillation")
             self.teacher_model = load_teacher_model(self.config.distill.teacher_checkpoint, self.device)
+        if self.train_cfg.objective == "opd":
+            if self.config.opd.teacher_checkpoint is None:
+                raise ValueError("opd.teacher_checkpoint is required for on-policy distillation")
+            self.teacher_model = load_teacher_model(self.config.opd.teacher_checkpoint, self.device)
         self.reference_model: AnilaLM | None = None
         if self.train_cfg.objective in {"dpo", "grpo", "ppo"}:
             if self.train_cfg.init_from is None:
@@ -400,6 +404,7 @@ class Trainer:
             data_config=self.config.data,
             dpo_config=self.config.dpo,
             grpo_config=self.config.grpo,
+            opd_config=self.config.opd,
             ppo_config=self.config.ppo,
             reward_config=self.config.reward,
             shuffle=True,
@@ -418,6 +423,7 @@ class Trainer:
             data_config=self.config.data,
             dpo_config=self.config.dpo,
             grpo_config=self.config.grpo,
+            opd_config=self.config.opd,
             ppo_config=self.config.ppo,
             reward_config=self.config.reward,
             shuffle=False,
@@ -536,6 +542,7 @@ class Trainer:
             "lora_targets": self.lora_targets,
             "adapter_checkpoint": str(adapter_path) if adapter_path else None,
             "dpo_config": asdict(self.config.dpo),
+            "opd_config": asdict(self.config.opd),
             "grpo_config": asdict(self.config.grpo),
             "ppo_config": asdict(self.config.ppo),
             "reward_config": asdict(self.config.reward),
@@ -699,12 +706,12 @@ class Trainer:
     def _data_objective(self) -> str:
         if self.train_cfg.objective == "distill":
             return self.config.distill.data_objective
-        if self.train_cfg.objective in {"dpo", "grpo", "ppo", "reward_model"}:
+        if self.train_cfg.objective in {"dpo", "opd", "grpo", "ppo", "reward_model"}:
             return self.train_cfg.objective
         return self.train_cfg.objective
 
     def _data_resume_contract(self) -> dict[str, Any]:
-        return {
+        contract = {
             "objective": self.train_cfg.objective,
             "dataset_path": self.train_cfg.dataset_path,
             "batch_size": self.train_cfg.batch_size,
@@ -718,6 +725,9 @@ class Trainer:
             "ppo_config": asdict(self.config.ppo),
             "reward_config": asdict(self.config.reward),
         }
+        if self.train_cfg.objective == "opd":
+            contract["opd_config"] = asdict(self.config.opd)
+        return contract
 
     def _compute_batch_loss(self, batch: tuple[Any, ...]) -> torch.Tensor:
         if self.train_cfg.objective == "dpo":
@@ -728,6 +738,10 @@ class Trainer:
             if len(batch) != 4:
                 raise RuntimeError("reward_model batch must contain chosen and rejected input/label tensors")
             return self._compute_reward_model_loss(*batch)
+        if self.train_cfg.objective == "opd":
+            if len(batch) != 3:
+                raise RuntimeError("OPD batch must contain prompt ids, prompt lengths, and optional expected strings")
+            return self._compute_opd_loss(*batch)
         if self.train_cfg.objective == "grpo":
             if len(batch) != 3:
                 raise RuntimeError("GRPO batch must contain prompt ids, prompt lengths, and expected responses")
@@ -772,6 +786,30 @@ class Trainer:
         chosen_scores = self.model(chosen_input_ids, chosen_labels).scores
         rejected_scores = self.model(rejected_input_ids, rejected_labels).scores
         return reward_model_loss(chosen_scores, rejected_scores).loss
+
+    def _compute_opd_loss(
+        self,
+        prompt_input_ids: torch.Tensor,
+        prompt_lengths: torch.Tensor,
+        expected: list[str | None],
+    ) -> torch.Tensor:
+        if self.teacher_model is None:
+            raise RuntimeError("teacher model is not loaded")
+        cfg = self.config.opd.validated()
+        rollout_input_ids, rollout_labels, _, _, _, _ = self._collect_rollout_batches(
+            prompt_input_ids,
+            prompt_lengths,
+            expected,
+            rollouts_per_prompt=cfg.num_rollouts,
+            max_new_tokens=cfg.max_new_tokens,
+            temperature=cfg.temperature,
+            top_k=cfg.top_k,
+            top_p=cfg.top_p,
+        )
+        student_logits = self.model(rollout_input_ids).logits
+        with torch.no_grad():
+            teacher_logits = self.teacher_model(rollout_input_ids).logits
+        return on_policy_distillation_loss(student_logits, teacher_logits, rollout_labels, cfg).loss
 
     def _compute_grpo_loss(
         self,

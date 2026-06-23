@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
-from anila.config import DataConfig, DPOConfig, GRPOConfig, PPOConfig, RewardConfig, SFTConfig
+from anila.config import DataConfig, DPOConfig, GRPOConfig, OPDConfig, PPOConfig, RewardConfig, SFTConfig
 from anila.tokenization import AnilaTokenizer
 
 IGNORE_INDEX = -100
@@ -356,7 +356,7 @@ class PromptRewardDataset(Dataset):
         path: PathInput,
         tokenizer: AnilaTokenizer,
         context_length: int,
-        config: GRPOConfig | PPOConfig | None = None,
+        config: GRPOConfig | OPDConfig | PPOConfig | None = None,
     ):
         if context_length <= 0:
             raise ValueError("context_length must be positive")
@@ -441,6 +441,7 @@ def create_dataloader(
     dpo_config: DPOConfig | None = None,
     data_config: DataConfig | None = None,
     grpo_config: GRPOConfig | None = None,
+    opd_config: OPDConfig | None = None,
     ppo_config: PPOConfig | None = None,
     reward_config: RewardConfig | None = None,
     shuffle: bool = True,
@@ -467,11 +468,14 @@ def create_dataloader(
     elif objective == "grpo":
         dataset = PromptRewardDataset(path, tokenizer, context_length, grpo_config)
         collate_fn = PromptRewardCollator(tokenizer.pad_id)
+    elif objective == "opd":
+        dataset = PromptRewardDataset(path, tokenizer, context_length, opd_config)
+        collate_fn = PromptRewardCollator(tokenizer.pad_id)
     elif objective == "ppo":
         dataset = PromptRewardDataset(path, tokenizer, context_length, ppo_config)
         collate_fn = PromptRewardCollator(tokenizer.pad_id)
     else:
-        raise ValueError("objective must be pretrain, sft, dpo, reward_model, grpo, or ppo")
+        raise ValueError("objective must be pretrain, sft, dpo, reward_model, opd, grpo, or ppo")
     return DataLoader(
         dataset,
         batch_size=batch_size,

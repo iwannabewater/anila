@@ -2,7 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from anila.config import DataConfig, DPOConfig, GRPOConfig, PPOConfig, RewardConfig, SFTConfig, load_run_config
+from anila.config import (
+    DataConfig,
+    DPOConfig,
+    GRPOConfig,
+    OPDConfig,
+    PPOConfig,
+    RewardConfig,
+    SFTConfig,
+    load_run_config,
+)
 from anila.data import (
     IGNORE_INDEX,
     PreferenceDataset,
@@ -320,6 +329,32 @@ def test_prompt_reward_dataloader_allows_prompt_only_records(tmp_path: Path) -> 
     assert input_ids.size(0) == 1
     assert lengths.shape == (1,)
     assert expected == [None]
+
+
+def test_opd_dataloader_uses_prompt_records(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "prompts.jsonl"
+    data.write_text(
+        '{"system": "Answer tersely.", "prompt": "What does Anila train?"}\n'
+        '{"prompt": "How are checkpoints saved?"}\n',
+        encoding="utf-8",
+    )
+
+    loader = create_dataloader(
+        data,
+        tokenizer,
+        context_length=64,
+        batch_size=2,
+        objective="opd",
+        opd_config=OPDConfig(teacher_checkpoint="teacher.pt"),
+        shuffle=False,
+        drop_last=False,
+    )
+    input_ids, lengths, expected = next(iter(loader))
+
+    assert input_ids.size(0) == 2
+    assert lengths.shape == (2,)
+    assert expected == [None, None]
 
 
 def test_ppo_dataloader_uses_prompt_reward_records(tmp_path: Path) -> None:

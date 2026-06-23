@@ -4,6 +4,16 @@
 
 No changes yet.
 
+## v0.1.8 - 2026-06-23
+
+On-policy distillation release.
+
+- Added native `train.objective = "opd"` for prompt-based on-policy distillation from a white-box Anila teacher checkpoint.
+- Added `OPDConfig`, prompt dataloader routing, on-policy rollout collection, masked teacher-logit distillation loss, checkpoint payload metadata, and integration coverage.
+- Added `configs/quickstart/opd.json` and `examples/tiny_opd_prompts.jsonl`, and included OPD in the full quickstart smoke path.
+- Updated README, architecture, data-contract, development, status, and full-flow quickstart docs for the OPD stage.
+- Bumped the package version to `0.1.8` for the first tagged GitHub release.
+
 ## v0.1.7 - 2026-06-23
 
 Full-flow onboarding release.
