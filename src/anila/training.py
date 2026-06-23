@@ -855,55 +855,23 @@ class Trainer:
         expected: list[str | None],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         cfg = self.config.ppo.validated()
-        was_training = self.model.training
-        self.model.eval()
-        rollout_inputs: list[torch.Tensor] = []
-        rollout_labels: list[torch.Tensor] = []
-        reward_inputs: list[torch.Tensor] = []
-        reward_labels: list[torch.Tensor] = []
-        responses: list[str] = []
-        targets: list[str | None] = []
-        try:
-            for batch_index, target in enumerate(expected):
-                prompt_len = int(prompt_lengths[batch_index].item())
-                prompt = prompt_input_ids[batch_index, :prompt_len].unsqueeze(0)
-                for _ in range(cfg.num_rollouts):
-                    generated = self._raw_model().generate(
-                        prompt,
-                        max_new_tokens=cfg.max_new_tokens,
-                        temperature=cfg.temperature,
-                        top_k=cfg.top_k,
-                        top_p=cfg.top_p,
-                        eos_id=self.tokenizer.eos_id,
-                    )[0]
-                    response_ids = generated[prompt_len:]
-                    response = self.tokenizer.decode(response_ids.tolist())
-                    responses.append(response)
-                    targets.append(target)
-
-                    input_ids = generated[:-1]
-                    labels = generated[1:].clone()
-                    labels[: max(prompt_len - 1, 0)] = IGNORE_INDEX
-                    if input_ids.size(0) > self.model_cfg.context_length:
-                        input_ids = input_ids[-self.model_cfg.context_length :]
-                        labels = labels[-self.model_cfg.context_length :]
-                    rollout_inputs.append(input_ids)
-                    rollout_labels.append(labels)
-
-                    reward_input_ids = generated
-                    reward_label_ids = torch.full_like(generated, IGNORE_INDEX)
-                    reward_label_ids[prompt_len:] = generated[prompt_len:]
-                    if reward_input_ids.size(0) > self.model_cfg.context_length:
-                        reward_input_ids = reward_input_ids[-self.model_cfg.context_length :]
-                        reward_label_ids = reward_label_ids[-self.model_cfg.context_length :]
-                    reward_inputs.append(reward_input_ids)
-                    reward_labels.append(reward_label_ids)
-        finally:
-            if was_training:
-                self.model.train()
-
-        input_batch, label_batch = self._pad_rollout_pairs(rollout_inputs, rollout_labels)
-        reward_input_batch, reward_label_batch = self._pad_rollout_pairs(reward_inputs, reward_labels)
+        (
+            input_batch,
+            label_batch,
+            reward_input_batch,
+            reward_label_batch,
+            responses,
+            targets,
+        ) = self._collect_rollout_batches(
+            prompt_input_ids,
+            prompt_lengths,
+            expected,
+            rollouts_per_prompt=cfg.num_rollouts,
+            max_new_tokens=cfg.max_new_tokens,
+            temperature=cfg.temperature,
+            top_k=cfg.top_k,
+            top_p=cfg.top_p,
+        )
 
         response_mask = label_batch.ne(IGNORE_INDEX)
         score_reward_batch = torch.zeros_like(label_batch, dtype=torch.float32)
@@ -934,6 +902,38 @@ class Trainer:
         expected: list[str | None],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         cfg = self.config.grpo.validated()
+        (
+            input_batch,
+            label_batch,
+            reward_input_batch,
+            reward_label_batch,
+            responses,
+            targets,
+        ) = self._collect_rollout_batches(
+            prompt_input_ids,
+            prompt_lengths,
+            expected,
+            rollouts_per_prompt=cfg.num_generations,
+            max_new_tokens=cfg.max_new_tokens,
+            temperature=cfg.temperature,
+            top_k=cfg.top_k,
+            top_p=cfg.top_p,
+        )
+        reward_tensor = self._score_rollouts(reward_input_batch, reward_label_batch, responses, targets)
+        return input_batch, label_batch, reward_tensor
+
+    def _collect_rollout_batches(
+        self,
+        prompt_input_ids: torch.Tensor,
+        prompt_lengths: torch.Tensor,
+        expected: list[str | None],
+        *,
+        rollouts_per_prompt: int,
+        max_new_tokens: int,
+        temperature: float,
+        top_k: int | None,
+        top_p: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list[str], list[str | None]]:
         was_training = self.model.training
         self.model.eval()
         rollout_inputs: list[torch.Tensor] = []
@@ -946,13 +946,13 @@ class Trainer:
             for batch_index, target in enumerate(expected):
                 prompt_len = int(prompt_lengths[batch_index].item())
                 prompt = prompt_input_ids[batch_index, :prompt_len].unsqueeze(0)
-                for _ in range(cfg.num_generations):
+                for _ in range(rollouts_per_prompt):
                     generated = self._raw_model().generate(
                         prompt,
-                        max_new_tokens=cfg.max_new_tokens,
-                        temperature=cfg.temperature,
-                        top_k=cfg.top_k,
-                        top_p=cfg.top_p,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
                         eos_id=self.tokenizer.eos_id,
                     )[0]
                     response_ids = generated[prompt_len:]
@@ -983,8 +983,7 @@ class Trainer:
 
         input_batch, label_batch = self._pad_rollout_pairs(rollout_inputs, rollout_labels)
         reward_input_batch, reward_label_batch = self._pad_rollout_pairs(reward_inputs, reward_labels)
-        reward_tensor = self._score_rollouts(reward_input_batch, reward_label_batch, responses, targets)
-        return input_batch, label_batch, reward_tensor
+        return input_batch, label_batch, reward_input_batch, reward_label_batch, responses, targets
 
     def _pad_rollout_pairs(
         self,

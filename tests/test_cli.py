@@ -1,5 +1,9 @@
+import os
 import re
+import subprocess
+import sysconfig
 from importlib.metadata import version as package_version
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -36,6 +40,19 @@ def test_cli_version_reports_installed_package_version() -> None:
     assert result.output.strip() == f"anila {package_version('anila')}"
 
 
+def test_installed_command_version_uses_stdout_without_stderr() -> None:
+    # Installed command smoke: exercise the console script, not only Typer's in-process runner.
+    script_name = "anila.exe" if os.name == "nt" else "anila"
+    command = Path(sysconfig.get_path("scripts")) / script_name
+    assert command.exists()
+
+    result = subprocess.run([str(command), "--version"], text=True, capture_output=True, check=False)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"anila {package_version('anila')}"
+    assert result.stderr == ""
+
+
 def test_cli_help_lists_resource_groups_and_version() -> None:
     result = CliRunner().invoke(app, ["--help"])
     output = _plain_cli_output(result.output)
@@ -45,6 +62,32 @@ def test_cli_help_lists_resource_groups_and_version() -> None:
     assert "tokenizer" in output
     assert "model" in output
     assert "checkpoint" in output
+
+
+def test_cli_generate_logprobs_requires_json(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"not a real checkpoint")
+    tokenizer = tmp_path / "tokenizer"
+    tokenizer.mkdir()
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "model",
+            "generate",
+            "--checkpoint",
+            str(checkpoint),
+            "--tokenizer",
+            str(tokenizer),
+            "--prompt",
+            "Anila is",
+            "--logprobs",
+        ],
+    )
+    output = _plain_cli_output(result.output)
+
+    assert result.exit_code != 0
+    assert "--logprobs requires --json" in output
 
 
 def test_top_level_api_exports_common_entrypoints() -> None:

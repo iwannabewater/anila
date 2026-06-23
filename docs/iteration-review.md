@@ -1,33 +1,65 @@
-# Iteration Review
+# Iteration Review Protocol
 
-This note records the review direction for the native beam-search iteration.
+This note is the durable review protocol for Anila iterations. Keep it stable and update it only when the project changes how work should be reviewed. Do not use it as a one-off release report.
 
-## Repository posture
+## Posture
 
-Anila already covers the main compact LLM training path: tokenizer training, data loading, a native GPT model, single-process training, checkpointing, sampling, evaluation, LoRA, distillation, DPO, reward modeling, GRPO, and PPO.
+Anila is a compact native PyTorch language-model training library. A good iteration makes the tokenizer-to-inference path clearer, safer, or easier to modify without hiding the native model, objective, data, checkpoint, and runtime contracts behind a heavy framework.
 
-The right next step was not another large training framework. The useful gap was in inference maturity: keep the existing sampling and greedy paths intact, then add a small deterministic beam-search path that makes checkpoint inspection and comparison runs more practical.
+Prefer changes that increase locality and leverage:
 
-## Implemented changes
+- Put validation in `src/anila/config.py`.
+- Keep strict UTF-8 handling in `src/anila/data.py` and `src/anila/tokenization.py`.
+- Keep generation semantics in `src/anila/model.py`.
+- Route checkpoint artifact reads through `load_checkpoint_payload`.
+- Keep runtime state, evaluation RNG isolation, resume state, and training-loader order in `src/anila/training.py`.
+- Add optional ecosystem or scaled-runtime support as adapters rather than changing the native checkpoint or objective path.
 
-- `AnilaLM.generate` now accepts `num_beams` and `length_penalty`.
-- `num_beams = 1` preserves the existing cached sampling and greedy generation path.
-- `num_beams > 1` uses a deterministic native beam-search path for a single prompt.
-- Beam search reuses existing top-k, top-p, min-p, repetition-penalty, temperature, EOS, and context-window behavior.
-- `sample_text` and `anila model generate` expose beam search through `--num-beams` and `--length-penalty`.
-- README, architecture notes, development docs, project status, and changelog were updated for the new generation contract.
+## Review Questions
 
-## Design constraints
+Before calling an iteration ready, answer these questions from current files and command output:
 
-- Existing generation defaults are unchanged.
-- Beam search is intentionally single-prompt for now; batch support would add bookkeeping complexity that the CLI does not need yet.
-- The cached single-path generator remains the fast default. Beam search recomputes each candidate window because a compact and obvious implementation is more valuable than premature cache sharing at this scale.
-- Length penalty is non-negative, where `0.0` keeps raw accumulated log-probability ranking.
+1. Does the change help a beginner move through tokenizer training, data preparation, pretraining, post-training, preference/RL training, evaluation, export, or inference?
+2. Does each changed file trace directly to the objective, runtime, or interface being improved?
+3. Did the change deepen a real module, or did it add a shallow wrapper whose interface is as complex as its implementation?
+4. Did any new public claim land in README, docs, status, or changelog without a command, test, or artifact proving it?
+5. Did the change alter checkpoint, generation, data loading, or training runtime behavior, and if so, is there focused regression coverage?
+6. Can the full verification gate run from one command: `bash scripts/verify.sh`?
 
-## Suggested next reviews
+## Required Evidence
 
-1. Add optional EMA weights for evaluation-only stabilization.
-2. Add lightweight benchmark/evaluation adapters without pulling in a heavy harness.
-3. Add token-cache generation for larger local corpora once streaming raw text becomes a real bottleneck.
-4. Consider optional RoPE scaling and sliding-window attention only after the current cache and generation contracts remain stable.
-5. Revisit batched beam search only when there is a concrete evaluation or serving path that needs it.
+Every release-minded iteration should leave these surfaces synchronized:
+
+- Version fields in `pyproject.toml`, `uv.lock`, `CHANGELOG.md`, and release/status docs.
+- Beginner-facing command paths in `README.md`, `docs/full-flow-quickstart.md`, and `docs/development.md`.
+- Data and checkpoint contracts in `docs/data-contracts.md`, `docs/architecture.md`, and tests.
+- CI and local verification through `scripts/verify.sh`.
+
+Run:
+
+```bash
+bash scripts/verify.sh
+```
+
+For broader onboarding or release changes, also run `bash scripts/quickstart-smoke.sh`. For packaging changes, build and inspect the source distribution and wheel, then run the installed console script in an isolated environment.
+
+## Architecture Bar
+
+Use the deep-module vocabulary consistently:
+
+- A module is worth keeping when deleting it would move complexity into several callers instead of making complexity disappear.
+- The interface is the test surface. If tests need to reach around the interface to prove behavior, the module is probably shaped wrong.
+- A seam is real when behavior varies behind it. One adapter is usually a hypothetical seam; two adapters make the variation concrete.
+- Locality matters more than line count. Large modules are acceptable when the project contract says they own a coherent runtime concern and the tests exercise that concern through the same interface as callers.
+
+## Stop Conditions
+
+Do not commit or push an iteration when any of these are true:
+
+- `bash scripts/verify.sh` fails.
+- A public doc describes a command that has not been run or covered by an equivalent test.
+- A checkpoint read path bypasses `load_checkpoint_payload`.
+- Evaluation can perturb training randomness.
+- Batched generation can keep emitting after `eos_id`.
+- New docs claim distributed training, Hugging Face interoperability, serving compatibility, or production model quality without implemented and tested support.
+- Generated artifacts under `runs/`, `dist/`, `.local/`, caches, checkpoints, or logs would be included in the commit.

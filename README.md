@@ -25,6 +25,8 @@ The repository is intentionally small enough to study and modify, while still us
 
 ## Quick Start
 
+For a staged walkthrough from tokenizer training through post-training, RL, evaluation, export, and inference, see [Full-Flow Quickstart](docs/full-flow-quickstart.md).
+
 ```bash
 # Install the package, runtime dependencies, and development tools.
 uv sync --group dev
@@ -165,12 +167,14 @@ Lower-level modules remain importable when extending objectives, data adapters, 
 ## Quality Checks
 
 ```bash
-# Check import order, lint rules, and common bug patterns.
-uv run ruff check .
+# Run the same lock, lint, and test gate as CI.
+bash scripts/verify.sh
 
-# Run the unit and integration test suite.
-uv run pytest
+# Exercise the full tiny local tokenizer-to-inference path.
+bash scripts/quickstart-smoke.sh
 ```
+
+The verification wrapper runs `uv lock --check`, `uv run ruff check .`, and `uv run pytest -q`. The quickstart smoke writes ignored artifacts under `runs/` and compact command outputs under the OS temp directory.
 
 Optional artifact adapters are not required for core training or inference. Install them only when exporting those formats:
 
@@ -486,7 +490,10 @@ PPO expects a policy initialized from a checkpoint and a frozen reference model.
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Data Contracts](docs/data-contracts.md)
 - [Development](docs/development.md)
+- [Full-Flow Quickstart](docs/full-flow-quickstart.md)
+- [Iteration Review Protocol](docs/iteration-review.md)
 - [Project Status](docs/status.md)
 - [Changelog](CHANGELOG.md)
 

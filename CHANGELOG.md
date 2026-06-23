@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-Reliability baseline.
+No changes yet.
+
+## v0.1.7 - 2026-06-23
+
+Full-flow onboarding release.
 
 - Centralized checkpoint loading on PyTorch restricted weight deserialization, rejected object-bearing payloads, and raised the minimum PyTorch version to a patched `>=2.10`.
 - Saved and restored runtime RNG state, and isolated evaluation from subsequent training randomness.
@@ -14,6 +18,11 @@ Reliability baseline.
 - Added lightweight benchmark suites and `anila model benchmark` for grouped LM, preference, and reward evaluation runs.
 - Added optional safetensors tensor export with `anila checkpoint export-safetensors` and a native manifest.
 - Added optional `train.ema_decay` with EMA validation, checkpoint resume, `--ema` sampling/evaluation/benchmark paths, LoRA merge handling, and safetensors export coverage.
+- Added a full-flow quickstart guide that ties tokenizer training, data, pretraining, SFT, LoRA, distillation, DPO, reward modeling, GRPO/PPO, evaluation, export, and efficient inference into one beginner-readable path.
+- Added data-contract documentation for plain-text pretraining, SFT, DPO, reward-model, GRPO/PPO, and distillation inputs.
+- Added `scripts/verify.sh` as the shared CI/local lock, lint, and test gate.
+- Added `scripts/quickstart-smoke.sh` as a local release-minded smoke for the full tiny tokenizer-to-inference workflow.
+- Replaced the stale iteration snapshot with a durable iteration-review protocol for release-minded changes.
 
 ## v0.1.6 - 2026-05-16
 

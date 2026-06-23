@@ -31,9 +31,9 @@ Anila is a compact native PyTorch language-model training library. Keep the core
 Run before committing:
 
 ```bash
-uv lock --check
-uv run ruff check .
-uv run pytest -q
+bash scripts/verify.sh
 ```
+
+That wrapper runs `uv lock --check`, `uv run ruff check .`, and `uv run pytest -q` in the same order as CI.
 
 For changes affecting checkpoints, generation, data loading, or training runtime, include the relevant focused regression tests in the change review.

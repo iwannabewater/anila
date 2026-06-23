@@ -1,10 +1,10 @@
 # Project Status
 
-Generated: 2026-05-28
+Generated: 2026-06-23
 
 ## Current Release
 
-`v0.1.6` establishes Anila as a compact full-flow language-model training library with stronger native generation controls, deterministic beam search, and local checkpoint lifecycle hygiene:
+`v0.1.7` establishes Anila as a compact full-flow language-model training library with stronger native generation controls, deterministic beam search, local checkpoint lifecycle hygiene, and a beginner-readable path through the full training and inference workflow:
 
 - Native GPT-style causal LM with RoPE, RMSNorm, SwiGLU, GQA, tied embeddings, KV-cache generation, greedy decoding, seeded sampling, top-k/top-p/min-p filtering, repetition penalty, and native beam search.
 - Training objectives: pretrain, SFT, LoRA SFT, hard/soft distillation, DPO, reward model, GRPO, and PPO.
@@ -18,21 +18,18 @@ Generated: 2026-05-28
 - LoRA checkpoints can now be exported as merged full-model checkpoints for plain native inference.
 - Canonical CLI commands are grouped by resource: `tokenizer`, `model`, and `checkpoint`.
 - `anila model evaluate` reports language-model loss/perplexity, policy preference accuracy, and reward-model pairwise accuracy.
+- `docs/full-flow-quickstart.md` walks from tokenizer training through data, pretraining, SFT, LoRA, distillation, DPO, reward modeling, GRPO/PPO, evaluation, optional export, and efficient inference.
+- `docs/data-contracts.md` documents the accepted plain-text and JSONL data shapes, label masks, configurable keys, and common failure modes for each objective.
+- `scripts/verify.sh` is the shared local and CI verification gate for lockfile, lint, and test checks.
+- `scripts/quickstart-smoke.sh` runs the full tiny tokenizer-to-inference workflow as a release-minded local smoke test.
+- `docs/iteration-review.md` captures the stable iteration-review protocol for release-minded changes.
 - Quickstart config filenames live under `configs/quickstart/` and use explicit objective names such as `pretrain.json`, `sft.json`, and `ppo-rule-reward.json`.
 - Integration tests use integration-test naming, keeping test vocabulary separate from user-facing run recipes.
 - Train config validation now rejects invalid AdamW betas, worker counts, device strings, output directories, and checkpoint retention counts before runtime setup.
 
-## Main Branch Since v0.1.6
+## Main Branch Since v0.1.7
 
-- Centralized library checkpoint reads on restricted `weights_only=True` deserialization and rejected object-bearing checkpoint payloads.
-- Preserved training RNG and built-in dataloader order across resume while keeping older checkpoints without data state loadable.
-- Corrected batched generation so rows that emit EOS remain terminal.
-- Kept strict UTF-8 input handling explicit for tokenizer and dataset reads.
-- Added `anila --version` and documented the small top-level Python API for common training, tokenizer, evaluation, checkpoint, and sampling entry points.
-- Added native single-path generation steps, streaming text output, text-level stop strings, structured generation metadata, and optional generated-token logprobs.
-- Added lightweight JSON/TOML benchmark suites over the native LM, preference, and reward evaluators.
-- Added optional safetensors tensor export with a native Anila manifest while keeping `.pt` checkpoint loading canonical.
-- Added optional `train.ema_decay` with EMA validation, checkpoint resume, checkpoint inspection, sampling, evaluation, benchmark, LoRA merge, and safetensors export support.
+No unreleased changes recorded yet.
 
 ## Non-Goals For This Release
 

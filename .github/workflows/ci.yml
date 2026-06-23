@@ -25,8 +25,5 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev --locked
 
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Test
-        run: uv run pytest
+      - name: Verify
+        run: bash scripts/verify.sh

@@ -15,14 +15,25 @@ uv run anila --help
 uv run anila --version
 ```
 
+For the ordered beginner path through tokenizer training, every quickstart objective, evaluation, export, and inference, use [Full-Flow Quickstart](full-flow-quickstart.md). For the input file schemas behind those commands, use [Data Contracts](data-contracts.md).
+
 ## Quality Gates
 
 ```bash
-uv run ruff check .
-uv run pytest
+bash scripts/verify.sh
 ```
 
+The verification wrapper runs `uv lock --check`, `uv run ruff check .`, and `uv run pytest -q`, matching CI.
+
+Before release-minded changes, use [Iteration Review Protocol](iteration-review.md) to check scope, evidence, architecture locality, and stop conditions.
+
 Run the end-to-end quickstart path before larger changes:
+
+```bash
+bash scripts/quickstart-smoke.sh
+```
+
+The smoke script writes ignored training artifacts under `runs/` and compact JSON/text outputs under the OS temp directory. The expanded command sequence is:
 
 ```bash
 # Train the tiny tokenizer used by all quickstart configs.
