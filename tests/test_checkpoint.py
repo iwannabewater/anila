@@ -41,7 +41,23 @@ def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
             "ema_model": {"weight": torch.zeros(1, 32)},
             "ema_decay": 0.99,
             "optimizer": {},
-            "model_config": asdict(ModelConfig(vocab_size=128, context_length=64, n_layer=1, n_head=2, n_embd=32)),
+            "model_config": asdict(
+                ModelConfig(
+                    vocab_size=128,
+                    context_length=64,
+                    n_layer=1,
+                    n_head=2,
+                    n_embd=32,
+                    rope_scaling="yarn",
+                    rope_scaling_factor=4.0,
+                    rope_original_context_length=16,
+                    rope_yarn_attention_factor=1.2,
+                    moe_num_experts=4,
+                    moe_top_k=2,
+                    moe_intermediate_size=64,
+                    moe_aux_loss_coef=0.01,
+                )
+            ),
             "train_config": asdict(
                 TrainConfig(dataset_path="data.jsonl", tokenizer_path="tokenizer", objective="reward_model")
             ),
@@ -63,6 +79,15 @@ def test_inspect_checkpoint_summarizes_native_payload(tmp_path: Path) -> None:
     assert summary["has_ema"] is True
     assert summary["has_reward_head"] is True
     assert summary["model"]["context_length"] == 64
+    assert summary["model"]["rope_scaling"] == "yarn"
+    assert summary["model"]["rope_scaling_factor"] == 4.0
+    assert summary["model"]["rope_original_context_length"] == 16
+    assert summary["model"]["rope_yarn_attention_factor"] == 1.2
+    assert summary["model"]["moe_num_experts"] == 4
+    assert summary["model"]["moe_top_k"] == 2
+    assert summary["model"]["moe_intermediate_size"] == 64
+    assert summary["model"]["moe_normalize_top_k"] is True
+    assert summary["model"]["moe_aux_loss_coef"] == 0.01
     assert summary["train"]["objective"] == "reward_model"
     assert summary["data"]["pretrain_mode"] == "packed"
 

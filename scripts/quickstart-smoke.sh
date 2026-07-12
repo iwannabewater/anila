@@ -12,6 +12,7 @@ uv run anila tokenizer train \
   --min-frequency 1
 
 uv run anila model train --config configs/quickstart/pretrain.json
+uv run anila model train --config configs/quickstart/pretrain-moe.json
 uv run anila model train --config configs/quickstart/sft.json
 uv run anila model train --config configs/quickstart/lora-sft.json
 

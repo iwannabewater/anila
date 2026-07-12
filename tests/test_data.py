@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from anila.data import (
     TextTokenDataset,
     create_dataloader,
 )
-from anila.tokenization import train_byte_bpe
+from anila.tokenization import DEFAULT_CHAT_SPECIAL_TOKENS, train_byte_bpe
 
 
 def _tokenizer(tmp_path: Path):
@@ -216,6 +217,92 @@ def test_sft_dataloader_pads_inputs_and_masks_labels(tmp_path: Path) -> None:
     assert (labels == IGNORE_INDEX).any()
 
 
+def test_sft_messages_support_reasoning_and_tool_calls(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(
+        "User: Use the calculator.\n"
+        "Assistant: <think>\nNeed a tool.\n</think>\n\n"
+        "<tool_call>\n{\"arguments\":{\"expression\":\"2+2\"},\"name\":\"calculate_math\"}\n</tool_call>\n"
+        "Tool: <tool_response>\n{\"result\":\"4\"}\n</tool_response>\n"
+        "Assistant: The answer is 4.\n",
+        encoding="utf-8",
+    )
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer = train_byte_bpe(
+        [corpus],
+        tokenizer_dir,
+        vocab_size=300,
+        min_frequency=1,
+        extra_special_tokens=DEFAULT_CHAT_SPECIAL_TOKENS,
+    )
+    data = tmp_path / "tool_sft.jsonl"
+    data.write_text(
+        '{"messages": ['
+        '{"role": "user", "content": "Use the calculator."}, '
+        '{"role": "assistant", "content": "", "reasoning_content": "Need a tool.", '
+        '"tool_calls": [{"name": "calculate_math", "arguments": {"expression": "2+2"}}]}, '
+        '{"role": "tool", "content": "{\\"result\\":\\"4\\"}"}, '
+        '{"role": "assistant", "content": "The answer is 4."}'
+        "]}\n",
+        encoding="utf-8",
+    )
+
+    dataset = SupervisedFineTuneDataset(data, tokenizer, context_length=128, config=SFTConfig(format="messages"))
+    input_ids, labels = dataset[0]
+    decoded = tokenizer.decode(input_ids.tolist(), preserve_added_special_tokens=True)
+    label_ids = set(labels[labels.ne(IGNORE_INDEX)].tolist())
+
+    assert "<think>" in decoded
+    assert "<tool_call>" in decoded
+    assert "<tool_response>" in decoded
+    assert tokenizer.token_to_id("<tool_call>") in label_ids
+    assert tokenizer.token_to_id("<think>") in label_ids
+    assert tokenizer.token_to_id("<tool_response>") not in label_ids
+    assert labels[-1].item() == tokenizer.eos_id
+
+
+def test_sft_messages_reject_invalid_tool_call_json(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "tool_sft.jsonl"
+    data.write_text(
+        '{"messages": [{"role": "assistant", "content": "", "tool_calls": "not json"}]}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        SupervisedFineTuneDataset(data, tokenizer, context_length=64, config=SFTConfig(format="messages"))
+
+
+def test_sft_messages_reject_non_finite_tool_call_json(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "tool_sft.jsonl"
+    data.write_text(
+        '{"messages": [{"role": "assistant", "content": "", '
+        '"tool_calls": "{\\"name\\":\\"calculate\\",\\"arguments\\":{\\"value\\":NaN}}"}]}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON constant"):
+        SupervisedFineTuneDataset(data, tokenizer, context_length=64, config=SFTConfig(format="messages"))
+
+
+def test_sft_messages_reject_duplicate_role_config(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "tool_sft.jsonl"
+    data.write_text(
+        '{"messages": [{"role": "assistant", "content": "Hello."}]}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="role names"):
+        SupervisedFineTuneDataset(
+            data,
+            tokenizer,
+            context_length=64,
+            config=SFTConfig(format="messages", assistant_role="tool"),
+        )
+
+
 def test_preference_dataset_builds_chosen_and_rejected_pairs(tmp_path: Path) -> None:
     tokenizer = _tokenizer(tmp_path)
     data = tmp_path / "prefs.jsonl"
@@ -281,6 +368,81 @@ def test_prompt_reward_dataset_builds_grpo_prompts(tmp_path: Path) -> None:
     assert "User:" in decoded
     assert "Assistant:" in decoded
     assert expected == "models"
+
+
+def test_prompt_reward_dataset_renders_chat_tools_for_tool_call_rewards(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "tool_prompts.jsonl"
+    expected_payload = {"answers": ["4"], "tools": ["calculate_math"]}
+    record = {
+        "messages": [{"role": "user", "content": "Use the calculator."}],
+        "tools": [{"type": "function", "function": {"name": "calculate_math"}}],
+        "expected": expected_payload,
+    }
+    data.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    dataset = PromptRewardDataset(
+        data,
+        tokenizer,
+        context_length=256,
+        config=GRPOConfig(num_generations=2, reward_type="tool_call"),
+    )
+    input_ids, expected = dataset[0]
+    decoded = tokenizer.decode(input_ids.tolist(), preserve_added_special_tokens=True)
+
+    assert "<tools>" in decoded
+    assert "calculate_math" in decoded
+    assert decoded.endswith("Assistant: ")
+    assert expected == json.dumps(expected_payload, ensure_ascii=False, sort_keys=True)
+
+
+def test_prompt_reward_dataset_rejects_non_finite_tool_call_expected(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "tool_prompts.jsonl"
+    data.write_text(
+        '{"prompt": "Use the calculator.", "tools": [{"type": "function", "function": {"name": "calc"}}], '
+        '"expected": {"answers": [NaN], "tools": ["calc"]}}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON constant"):
+        PromptRewardDataset(
+            data,
+            tokenizer,
+            context_length=256,
+            config=GRPOConfig(num_generations=2, reward_type="tool_call"),
+        )
+
+
+def test_prompt_reward_dataset_rejects_structured_expected_for_plain_rule_rewards(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "prompts.jsonl"
+    data.write_text(
+        '{"prompt": "What does Anila train?", "expected": {"answers": ["models"]}}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="expected"):
+        PromptRewardDataset(data, tokenizer, context_length=64, config=GRPOConfig(num_generations=2))
+
+
+def test_opd_prompt_dataset_ignores_structured_expected(tmp_path: Path) -> None:
+    tokenizer = _tokenizer(tmp_path)
+    data = tmp_path / "prompts.jsonl"
+    data.write_text(
+        '{"prompt": "What does Anila train?", "expected": {"answers": ["models"]}}\n',
+        encoding="utf-8",
+    )
+
+    dataset = PromptRewardDataset(
+        data,
+        tokenizer,
+        context_length=64,
+        config=OPDConfig(teacher_checkpoint="teacher.pt"),
+    )
+
+    _, expected = dataset[0]
+    assert expected is None
 
 
 def test_grpo_dataloader_pads_prompts_and_keeps_expected_strings(tmp_path: Path) -> None:

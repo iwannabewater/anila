@@ -15,6 +15,7 @@ from anila.model import AnilaLM
 class PolicyValueOutput:
     logits: torch.Tensor
     values: torch.Tensor
+    aux_loss: torch.Tensor | None = None
 
 
 @dataclass
@@ -39,7 +40,11 @@ class PolicyValueModel(nn.Module):
         output = self.policy(input_ids, return_hidden_states=True)
         if output.hidden_states is None:
             raise RuntimeError("policy did not return hidden states")
-        return PolicyValueOutput(logits=output.logits, values=self.value_head(output.hidden_states).squeeze(-1))
+        return PolicyValueOutput(
+            logits=output.logits,
+            values=self.value_head(output.hidden_states).squeeze(-1),
+            aux_loss=output.aux_loss,
+        )
 
     def generate(self, *args, **kwargs) -> torch.Tensor:
         return self.policy.generate(*args, **kwargs)

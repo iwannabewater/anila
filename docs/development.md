@@ -47,6 +47,9 @@ uv run anila tokenizer train \
 # Build the base pretraining checkpoint.
 uv run anila model train --config configs/quickstart/pretrain.json
 
+# Optionally exercise the native routed-MoE model path.
+uv run anila model train --config configs/quickstart/pretrain-moe.json
+
 # Build SFT and LoRA checkpoints from the base path.
 uv run anila model train --config configs/quickstart/sft.json
 uv run anila model train --config configs/quickstart/lora-sft.json
@@ -143,9 +146,13 @@ Quickstart configs are intentionally tiny, readable recipes under `configs/quick
 
 The pretraining quickstart uses `data.pretrain_mode = "packed"`. The default remains `sliding_window` for backward-compatible configs, and `streaming` is available for larger local text files that should not be materialized as one corpus tensor.
 
+The default model path uses ordinary RoPE. To exercise native YaRN-style RoPE scaling, set `model.rope_scaling = "yarn"`, `model.rope_scaling_factor`, and `model.rope_original_context_length`; validation rejects scaling settings that would be ignored or leave the configured context unextended.
+
+The dense model path remains the default. `configs/quickstart/pretrain-moe.json` sets `model.moe_num_experts`, `model.moe_top_k`, `model.moe_intermediate_size`, and `model.moe_aux_loss_coef` to exercise the native routed-SwiGLU expert path without adding distributed runtime or fused-kernel dependencies.
+
 ## Python API
 
-The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `stream_text`, checkpoint inspection/merge/export helpers, evaluation functions, and the lightweight benchmark suite runner. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
+The package root intentionally exposes only the common convenience surface: `__version__`, config dataclasses and `load_run_config`, `AnilaLM`, `RewardModel`, `train`, `train_byte_bpe`, `sample_text`, `generate_text`, `generate_chat`, `generate_tool_chat`, `stream_text`, chat prompt/render helpers, checkpoint inspection/merge/export helpers, evaluation functions, and the lightweight benchmark suite runner. Use module-level imports such as `anila.data`, `anila.peft`, or `anila.training` when changing internals or adding optional adapters.
 
 ## Runtime Flags
 
@@ -161,9 +168,11 @@ The trainer keeps performance-oriented behavior explicit in `train` config:
 
 `AnilaLM.generate` enables `use_cache=True` by default. The first sampling step pre-fills the cache with the active context window, later steps feed only the newest token, and the cache is rebuilt from the most recent context window when it would exceed `model.context_length`.
 
-The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment.
+The ordinary `forward(input_ids, targets=...)` training path remains cache-free. Cached continuations reject `targets` because cached loss computation would obscure label alignment. For inference-style scoring, `forward(..., logits_to_keep=N)` materializes only the last N logit positions and keeps full hidden states available when `return_hidden_states=True`.
 
 The CLI generation path exposes sampling and deterministic modes through `--sample/--greedy`, optional `--seed`, `--top-k 0` to disable top-k, `--top-p`, `--min-p`, `--repetition-penalty`, `--num-beams`, `--length-penalty`, and `--full-text/--completion-only`. It also supports repeated `--stop` strings, `--json` structured output, `--logprobs` for generated-token logprobs in JSON output, `--stream` for single-path streaming generation, and `--ema` for checkpoints saved with EMA weights.
+
+`anila model chat` renders `System:` / `User:` / `Assistant:` prompts, optional JSON tool specs, and parsed `<think>` / `<tool_call>` metadata over the native generation path. When a checkpoint includes `sft_config`, chat generation uses those saved prefixes and tags for rendering and parsing. The Python `generate_tool_chat` helper can run caller-supplied callbacks and append JSON tool results for local tool-use loops bounded by rounds and per-turn call count. The CLI is a local inference helper, not an OpenAI API server or arbitrary tool executor.
 
 ## Checkpoint Contract
 
@@ -172,7 +181,7 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `schema_version`: checkpoint schema version.
 - `objective`: training objective, currently `pretrain`, `sft`, `distill`, `opd`, `dpo`, `reward_model`, `grpo`, or `ppo`.
 - `model`: model state dict.
-- `model_config`: model config as plain data.
+- `model_config`: model config as plain data, including optional RoPE scaling and MoE settings when enabled.
 - `train_config`: train config as plain data.
 - `data_config`: pretraining data mode and sequence-window controls as plain data.
 - `lora_config`: LoRA config as plain data.
@@ -181,8 +190,8 @@ Training checkpoints are ordinary `torch.save` dictionaries:
 - `distill_config`: distillation config as plain data.
 - `dpo_config`: DPO config as plain data.
 - `opd_config`: on-policy distillation config as plain data.
-- `grpo_config`: GRPO config as plain data.
-- `ppo_config`: PPO config as plain data.
+- `grpo_config`: GRPO config as plain data, including the optional CISPO loss type and rule reward type.
+- `ppo_config`: PPO config as plain data, including the rule reward type.
 - `reward_config`: reward scorer and reward model config as plain data.
 - `value_head`: PPO value head state dict, or `None` for non-PPO objectives.
 - `reward_head`: reward model head state dict, or `None` for non-reward-model objectives.

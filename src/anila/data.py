@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
+from anila._json import dumps_strict_json, loads_strict_json
+from anila.chat import render_chat_prompt
 from anila.config import DataConfig, DPOConfig, GRPOConfig, OPDConfig, PPOConfig, RewardConfig, SFTConfig
 from anila.tokenization import AnilaTokenizer
 
@@ -115,9 +118,10 @@ class SupervisedFineTuneDataset(Dataset):
                 if not line:
                     continue
                 try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Invalid JSON in {path}:{line_number}: {exc.msg}") from exc
+                    record = loads_strict_json(line)
+                except ValueError as exc:
+                    detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+                    raise ValueError(f"Invalid JSON in {path}:{line_number}: {detail}") from exc
                 if not isinstance(record, dict):
                     raise ValueError(f"SFT record in {path}:{line_number} must be a JSON object")
                 input_ids, labels = self._record_to_tensors(record, path=path, line_number=line_number)
@@ -176,15 +180,85 @@ class SupervisedFineTuneDataset(Dataset):
             if not isinstance(message, dict):
                 raise ValueError(f"SFT message {message_index} in {path}:{line_number} must be an object")
             role = self._require_str(message, self.config.role_key, path=path, line_number=line_number)
-            content = self._require_str(message, self.config.content_key, path=path, line_number=line_number)
-            prefix = self._prefix_for_role(role, path=path, line_number=line_number)
-            is_assistant = role == self.config.assistant_role
-            self._append_text(token_ids, trainable, f"{prefix} ", train=False)
-            self._append_text(token_ids, trainable, f"{content}\n", train=is_assistant)
+            self._append_message(
+                token_ids,
+                trainable,
+                message,
+                role=role,
+                path=path,
+                line_number=line_number,
+            )
             last_role = role
         token_ids.append(self.tokenizer.eos_id)
         trainable.append(last_role == self.config.assistant_role)
         return token_ids, trainable
+
+    def _append_message(
+        self,
+        token_ids: list[int],
+        trainable: list[bool],
+        message: dict,
+        *,
+        role: str,
+        path: Path,
+        line_number: int,
+    ) -> None:
+        prefix = self._prefix_for_role(role, path=path, line_number=line_number)
+        self._append_text(token_ids, trainable, f"{prefix} ", train=False)
+        if role == self.config.assistant_role:
+            self._append_assistant_message(token_ids, trainable, message, path=path, line_number=line_number)
+            return
+        content = self._require_message_content(message, role=role, path=path, line_number=line_number)
+        if role == self.config.tool_role:
+            self._append_text(
+                token_ids,
+                trainable,
+                f"{self.config.tool_response_start}\n{content}\n{self.config.tool_response_end}\n",
+                train=False,
+            )
+            return
+        self._append_text(token_ids, trainable, f"{content}\n", train=False)
+
+    def _append_assistant_message(
+        self,
+        token_ids: list[int],
+        trainable: list[bool],
+        message: dict,
+        *,
+        path: Path,
+        line_number: int,
+    ) -> None:
+        content = self._optional_str(message, self.config.content_key, path=path, line_number=line_number)
+        reasoning_present = self.config.reasoning_key in message
+        reasoning = self._optional_str(message, self.config.reasoning_key, path=path, line_number=line_number)
+        tool_calls = self._tool_call_payloads(message, path=path, line_number=line_number)
+        if not content and not reasoning_present and not tool_calls:
+            raise ValueError(
+                f"SFT assistant message in {path}:{line_number} requires content, "
+                f"{self.config.reasoning_key!r}, or {self.config.tool_calls_key!r}"
+            )
+        if reasoning_present:
+            self._append_text(
+                token_ids,
+                trainable,
+                f"{self.config.thinking_start}\n{reasoning or ''}\n{self.config.thinking_end}\n\n",
+                train=True,
+            )
+        if content:
+            self._append_text(token_ids, trainable, content, train=True)
+        if tool_calls:
+            if content and not content.endswith("\n"):
+                self._append_text(token_ids, trainable, "\n", train=True)
+            for index, payload in enumerate(tool_calls):
+                if index > 0:
+                    self._append_text(token_ids, trainable, "\n", train=True)
+                self._append_text(
+                    token_ids,
+                    trainable,
+                    f"{self.config.tool_call_start}\n{payload}\n{self.config.tool_call_end}",
+                    train=True,
+                )
+        self._append_text(token_ids, trainable, "\n", train=True)
 
     def _prefix_for_role(self, role: str, *, path: Path, line_number: int) -> str:
         if role == self.config.system_role:
@@ -193,6 +267,8 @@ class SupervisedFineTuneDataset(Dataset):
             return self.config.user_prefix
         if role == self.config.assistant_role:
             return self.config.assistant_prefix
+        if role == self.config.tool_role:
+            return self.config.tool_prefix
         raise ValueError(f"Unsupported SFT role {role!r} in {path}:{line_number}")
 
     @staticmethod
@@ -201,6 +277,62 @@ class SupervisedFineTuneDataset(Dataset):
         if not isinstance(value, str) or not value:
             raise ValueError(f"SFT record in {path}:{line_number} requires non-empty string field {key!r}")
         return value
+
+    def _require_message_content(self, message: dict, *, role: str, path: Path, line_number: int) -> str:
+        value = self._optional_str(message, self.config.content_key, path=path, line_number=line_number)
+        if not value:
+            raise ValueError(
+                f"SFT {role} message in {path}:{line_number} requires non-empty string field "
+                f"{self.config.content_key!r}"
+            )
+        return value
+
+    @staticmethod
+    def _optional_str(record: dict, key: str, *, path: Path, line_number: int) -> str | None:
+        if key not in record:
+            return None
+        value = record.get(key)
+        if not isinstance(value, str):
+            raise ValueError(f"SFT record in {path}:{line_number} field {key!r} must be a string")
+        return value
+
+    def _tool_call_payloads(self, message: dict, *, path: Path, line_number: int) -> list[str]:
+        if self.config.tool_calls_key not in message:
+            return []
+        raw_value = message[self.config.tool_calls_key]
+        if isinstance(raw_value, str):
+            if not raw_value:
+                raise ValueError(
+                    f"SFT record in {path}:{line_number} field {self.config.tool_calls_key!r} cannot be empty"
+            )
+            try:
+                value = loads_strict_json(raw_value)
+            except ValueError as exc:
+                detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+                raise ValueError(
+                    f"Invalid JSON in SFT field {self.config.tool_calls_key!r} at {path}:{line_number}: {detail}"
+                ) from exc
+        else:
+            value = raw_value
+        calls = [value] if isinstance(value, dict) else value
+        if not isinstance(calls, list) or not calls:
+            raise ValueError(
+                f"SFT record in {path}:{line_number} field {self.config.tool_calls_key!r} must be an object or "
+                "a non-empty list of objects"
+            )
+        rendered: list[str] = []
+        for index, call in enumerate(calls):
+            if not isinstance(call, dict):
+                raise ValueError(
+                    f"SFT tool call {index} in {path}:{line_number} must be an object"
+                )
+            try:
+                rendered.append(dumps_strict_json(call, ensure_ascii=False, sort_keys=True))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"SFT tool call {index} in {path}:{line_number} must be JSON serializable with finite numbers"
+                ) from exc
+        return rendered
 
     def _append_text(self, token_ids: list[int], trainable: list[bool], text: str, *, train: bool) -> None:
         ids = self.tokenizer.encode(text)
@@ -254,9 +386,10 @@ class PreferenceDataset(Dataset):
                 if not line:
                     continue
                 try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Invalid JSON in {path}:{line_number}: {exc.msg}") from exc
+                    record = loads_strict_json(line)
+                except ValueError as exc:
+                    detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+                    raise ValueError(f"Invalid JSON in {path}:{line_number}: {detail}") from exc
                 if not isinstance(record, dict):
                     raise ValueError(f"DPO record in {path}:{line_number} must be a JSON object")
                 self.examples.append(self._record_to_tensors(record, path=path, line_number=line_number))
@@ -357,12 +490,14 @@ class PromptRewardDataset(Dataset):
         tokenizer: AnilaTokenizer,
         context_length: int,
         config: GRPOConfig | OPDConfig | PPOConfig | None = None,
+        sft_config: SFTConfig | None = None,
     ):
         if context_length <= 0:
             raise ValueError("context_length must be positive")
         self.tokenizer = tokenizer
         self.context_length = context_length
         self.config = (config or GRPOConfig()).validated()
+        self.sft_config = (sft_config or SFTConfig()).validated()
         self.examples: list[tuple[torch.Tensor, str | None]] = []
         for input_path in normalize_paths(path):
             self._load_path(input_path)
@@ -376,29 +511,112 @@ class PromptRewardDataset(Dataset):
                 if not line:
                     continue
                 try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Invalid JSON in {path}:{line_number}: {exc.msg}") from exc
+                    record = loads_strict_json(line)
+                except ValueError as exc:
+                    detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+                    raise ValueError(f"Invalid JSON in {path}:{line_number}: {detail}") from exc
                 if not isinstance(record, dict):
                     raise ValueError(f"Prompt reward record in {path}:{line_number} must be a JSON object")
                 self.examples.append(self._record_to_example(record, path=path, line_number=line_number))
 
     def _record_to_example(self, record: dict, *, path: Path, line_number: int) -> tuple[torch.Tensor, str | None]:
-        prompt = self._require_str(record, self.config.prompt_key, path=path, line_number=line_number)
-        expected = None
-        if self.config.expected_key in record:
-            expected = self._require_str(record, self.config.expected_key, path=path, line_number=line_number)
+        expected = None if isinstance(self.config, OPDConfig) else self._optional_expected(record, path=path, line_number=line_number)
         token_ids = [self.tokenizer.bos_id]
-        if self.config.system_key in record:
-            system = self._require_str(record, self.config.system_key, path=path, line_number=line_number)
-            token_ids.extend(self.tokenizer.encode(f"System: {system}\n"))
-        token_ids.extend(self.tokenizer.encode(f"User: {prompt}\nAssistant: "))
+        prompt_text = self._record_to_prompt(record, path=path, line_number=line_number)
+        token_ids.extend(self.tokenizer.encode(prompt_text))
         if len(token_ids) > self.context_length:
             raise ValueError(
                 f"Prompt reward prompt in {path}:{line_number} has {len(token_ids)} tokens, "
                 f"but at most {self.context_length} are supported by context_length={self.context_length}"
             )
         return torch.tensor(token_ids, dtype=torch.long), expected
+
+    def _record_to_prompt(self, record: dict, *, path: Path, line_number: int) -> str:
+        has_messages = self.sft_config.messages_key in record
+        has_prompt = self.config.prompt_key in record
+        tools = self._optional_tools(record, path=path, line_number=line_number)
+        if has_messages:
+            if has_prompt:
+                raise ValueError(
+                    f"Prompt reward record in {path}:{line_number} cannot mix "
+                    f"{self.sft_config.messages_key!r} and {self.config.prompt_key!r}"
+                )
+            messages = record[self.sft_config.messages_key]
+            if not isinstance(messages, list) or not messages:
+                raise ValueError(
+                    f"Prompt reward record in {path}:{line_number} requires a non-empty "
+                    f"{self.sft_config.messages_key} list"
+                )
+            return self._render_chat_prompt(messages, tools=tools, path=path, line_number=line_number)
+
+        prompt = self._require_str(record, self.config.prompt_key, path=path, line_number=line_number)
+        if tools is not None:
+            messages: list[dict[str, str]] = []
+            if self.config.system_key in record:
+                system = self._require_str(record, self.config.system_key, path=path, line_number=line_number)
+                messages.append({self.sft_config.role_key: self.sft_config.system_role, self.sft_config.content_key: system})
+            messages.append({self.sft_config.role_key: self.sft_config.user_role, self.sft_config.content_key: prompt})
+            return self._render_chat_prompt(messages, tools=tools, path=path, line_number=line_number)
+
+        chunks: list[str] = []
+        if self.config.system_key in record:
+            system = self._require_str(record, self.config.system_key, path=path, line_number=line_number)
+            chunks.append(f"System: {system}\n")
+        chunks.append(f"User: {prompt}\nAssistant: ")
+        return "".join(chunks)
+
+    def _render_chat_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None,
+        path: Path,
+        line_number: int,
+    ) -> str:
+        try:
+            return render_chat_prompt(messages, tools=tools, add_generation_prompt=True, config=self.sft_config)
+        except ValueError as exc:
+            raise ValueError(f"Invalid prompt reward chat record in {path}:{line_number}: {exc}") from exc
+
+    def _optional_expected(self, record: dict, *, path: Path, line_number: int) -> str | None:
+        if self.config.expected_key not in record:
+            return None
+        value = record[self.config.expected_key]
+        if isinstance(value, str):
+            if not value:
+                raise ValueError(
+                    f"Prompt reward record in {path}:{line_number} requires non-empty string field "
+                    f"{self.config.expected_key!r}"
+                )
+            return value
+        if getattr(self.config, "reward_type", None) == "tool_call" and isinstance(value, dict | list):
+            if not value:
+                raise ValueError(
+                    f"Prompt reward record in {path}:{line_number} field {self.config.expected_key!r} cannot be empty"
+                )
+            try:
+                return dumps_strict_json(value, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Prompt reward record in {path}:{line_number} field {self.config.expected_key!r} must be "
+                    "JSON serializable with finite numbers"
+                ) from exc
+        raise ValueError(
+            f"Prompt reward record in {path}:{line_number} field {self.config.expected_key!r} must be a "
+            "non-empty string"
+        )
+
+    @staticmethod
+    def _optional_tools(record: dict, *, path: Path, line_number: int) -> list[dict[str, Any]] | None:
+        if "tools" not in record:
+            return None
+        tools = record["tools"]
+        if not isinstance(tools, list) or not tools:
+            raise ValueError(f"Prompt reward record in {path}:{line_number} field 'tools' must be a non-empty list")
+        for index, tool in enumerate(tools):
+            if not isinstance(tool, dict):
+                raise ValueError(f"Prompt reward tool {index} in {path}:{line_number} must be an object")
+        return tools
 
     @staticmethod
     def _require_str(record: dict, key: str, *, path: Path, line_number: int) -> str:
@@ -466,13 +684,13 @@ def create_dataloader(
         dataset = PreferenceDataset(path, tokenizer, context_length, reward_config)
         collate_fn = DPOCollator(tokenizer.pad_id)
     elif objective == "grpo":
-        dataset = PromptRewardDataset(path, tokenizer, context_length, grpo_config)
+        dataset = PromptRewardDataset(path, tokenizer, context_length, grpo_config, sft_config=sft_config)
         collate_fn = PromptRewardCollator(tokenizer.pad_id)
     elif objective == "opd":
-        dataset = PromptRewardDataset(path, tokenizer, context_length, opd_config)
+        dataset = PromptRewardDataset(path, tokenizer, context_length, opd_config, sft_config=sft_config)
         collate_fn = PromptRewardCollator(tokenizer.pad_id)
     elif objective == "ppo":
-        dataset = PromptRewardDataset(path, tokenizer, context_length, ppo_config)
+        dataset = PromptRewardDataset(path, tokenizer, context_length, ppo_config, sft_config=sft_config)
         collate_fn = PromptRewardCollator(tokenizer.pad_id)
     else:
         raise ValueError("objective must be pretrain, sft, dpo, reward_model, opd, grpo, or ppo")

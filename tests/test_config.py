@@ -1,8 +1,22 @@
+import math
 from pathlib import Path
 
 import pytest
 
-from anila.config import DataConfig, ModelConfig, OPDConfig, RewardConfig, TrainConfig, load_run_config
+from anila.config import (
+    DataConfig,
+    DistillConfig,
+    DPOConfig,
+    GRPOConfig,
+    LoRAConfig,
+    ModelConfig,
+    OPDConfig,
+    PPOConfig,
+    RewardConfig,
+    SFTConfig,
+    TrainConfig,
+    load_run_config,
+)
 
 
 def test_model_config_fills_kv_heads() -> None:
@@ -18,6 +32,154 @@ def test_model_config_rejects_zero_kv_heads() -> None:
 def test_invalid_attention_shape_fails() -> None:
     with pytest.raises(ValueError, match="n_embd"):
         ModelConfig(n_embd=65, n_head=4).validated()
+
+
+def test_model_config_rejects_invalid_explicit_model_values() -> None:
+    with pytest.raises(ValueError, match="n_layer"):
+        ModelConfig(n_layer=True).validated()
+    with pytest.raises(ValueError, match="context_length"):
+        ModelConfig(context_length=16.5).validated()
+    with pytest.raises(ValueError, match="bias"):
+        ModelConfig(bias="false").validated()
+    with pytest.raises(ValueError, match="even"):
+        ModelConfig(n_embd=6, n_head=2).validated()
+
+
+def test_model_config_validates_moe_settings() -> None:
+    cfg = ModelConfig(
+        n_embd=64,
+        n_head=4,
+        moe_num_experts=4,
+        moe_top_k=2,
+        moe_intermediate_size=96,
+        moe_aux_loss_coef=0.01,
+    ).validated()
+
+    assert cfg.moe_num_experts == 4
+    assert cfg.moe_top_k == 2
+    assert cfg.moe_intermediate_size == 96
+
+    with pytest.raises(ValueError, match="moe_num_experts"):
+        ModelConfig(n_embd=64, n_head=4, moe_num_experts=1).validated()
+    with pytest.raises(ValueError, match="moe_top_k"):
+        ModelConfig(n_embd=64, n_head=4, moe_num_experts=4, moe_top_k=5).validated()
+    with pytest.raises(ValueError, match="moe_top_k"):
+        ModelConfig(n_embd=64, n_head=4, moe_top_k=2).validated()
+    with pytest.raises(ValueError, match="moe_intermediate_size"):
+        ModelConfig(n_embd=64, n_head=4, moe_num_experts=4, moe_intermediate_size=0).validated()
+    with pytest.raises(ValueError, match="moe_aux_loss_coef"):
+        ModelConfig(n_embd=64, n_head=4, moe_num_experts=4, moe_aux_loss_coef=-0.1).validated()
+    with pytest.raises(ValueError, match="moe_aux_loss_coef"):
+        ModelConfig(n_embd=64, n_head=4, moe_num_experts=4, moe_aux_loss_coef=math.nan).validated()
+    with pytest.raises(ValueError, match="moe_aux_loss_coef"):
+        ModelConfig(n_embd=64, n_head=4, moe_num_experts=4, moe_aux_loss_coef=math.inf).validated()
+
+
+def test_model_config_validates_yarn_rope_scaling() -> None:
+    cfg = ModelConfig(
+        context_length=128,
+        n_embd=64,
+        n_head=4,
+        rope_scaling="yarn",
+        rope_scaling_factor=4.0,
+        rope_original_context_length=32,
+        rope_yarn_attention_factor=1.2,
+    ).validated()
+
+    assert cfg.rope_scaling == "yarn"
+    assert cfg.rope_scaling_factor == 4.0
+    assert cfg.rope_original_context_length == 32
+    assert cfg.rope_yarn_attention_factor == 1.2
+
+    with pytest.raises(ValueError, match="rope_scaling"):
+        ModelConfig(n_embd=64, n_head=4, rope_scaling="linear").validated()
+    with pytest.raises(ValueError, match="rope_scaling_factor"):
+        ModelConfig(n_embd=64, n_head=4, rope_scaling_factor=2.0).validated()
+    with pytest.raises(ValueError, match="rope_original_context_length"):
+        ModelConfig(n_embd=64, n_head=4, rope_original_context_length=32).validated()
+    with pytest.raises(ValueError, match="rope_scaling_factor"):
+        ModelConfig(
+            context_length=128,
+            n_embd=64,
+            n_head=4,
+            rope_scaling="yarn",
+            rope_scaling_factor=1.0,
+            rope_original_context_length=32,
+        ).validated()
+    with pytest.raises(ValueError, match="rope_original_context_length"):
+        ModelConfig(
+            context_length=128,
+            n_embd=64,
+            n_head=4,
+            rope_scaling="yarn",
+            rope_scaling_factor=4.0,
+        ).validated()
+    with pytest.raises(ValueError, match="rope_original_context_length"):
+        ModelConfig(
+            context_length=128,
+            n_embd=64,
+            n_head=4,
+            rope_scaling="yarn",
+            rope_scaling_factor=4.0,
+            rope_original_context_length=128,
+        ).validated()
+    with pytest.raises(ValueError, match="rope_yarn_beta_fast"):
+        ModelConfig(
+            context_length=128,
+            n_embd=64,
+            n_head=4,
+            rope_scaling="yarn",
+            rope_scaling_factor=4.0,
+            rope_original_context_length=32,
+            rope_yarn_beta_fast=0.5,
+            rope_yarn_beta_slow=1.0,
+        ).validated()
+
+
+def test_grpo_config_validates_cispo_settings() -> None:
+    cfg = GRPOConfig(loss_type="cispo", cispo_ratio_cap=3.0).validated()
+
+    assert cfg.loss_type == "cispo"
+    assert cfg.cispo_ratio_cap == 3.0
+
+    with pytest.raises(ValueError, match="loss_type"):
+        GRPOConfig(loss_type="unknown").validated()
+    with pytest.raises(ValueError, match="cispo_ratio_cap"):
+        GRPOConfig(loss_type="cispo", cispo_ratio_cap=0.0).validated()
+    with pytest.raises(ValueError, match="cispo_ratio_cap"):
+        GRPOConfig(loss_type="cispo", cispo_ratio_cap=math.inf).validated()
+    with pytest.raises(ValueError, match="clip_range"):
+        GRPOConfig(clip_range=math.nan).validated()
+
+
+def test_policy_reward_configs_accept_tool_call_reward_type() -> None:
+    assert GRPOConfig(reward_type="tool_call").validated().reward_type == "tool_call"
+    assert PPOConfig(reward_type="tool_call").validated().reward_type == "tool_call"
+
+    with pytest.raises(ValueError, match="reward_type"):
+        GRPOConfig(reward_type="unknown").validated()
+    with pytest.raises(ValueError, match="reward_type"):
+        PPOConfig(reward_type="unknown").validated()
+
+
+@pytest.mark.parametrize(
+    ("config", "match"),
+    [
+        (TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", learning_rate=math.nan), "learning_rate"),
+        (TrainConfig(dataset_path="train.txt", tokenizer_path="tokenizer", batch_size=True), "batch_size"),
+        (LoRAConfig(rank=True), "lora.rank"),
+        (LoRAConfig(alpha=math.inf), "lora.alpha"),
+        (DistillConfig(temperature=math.nan), "distill.temperature"),
+        (DPOConfig(beta=math.inf), "dpo.beta"),
+        (OPDConfig(teacher_checkpoint="teacher.pt", temperature=math.inf), "opd.temperature"),
+        (GRPOConfig(temperature=math.nan), "grpo.temperature"),
+        (PPOConfig(beta=math.nan), "ppo.beta"),
+        (RewardConfig(scale=math.inf), "reward.scale"),
+    ],
+)
+def test_configs_reject_non_finite_and_bool_numeric_inputs(config, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        config.validated()
 
 
 def test_load_run_config_rejects_unknown_keys(tmp_path: Path) -> None:
@@ -45,6 +207,16 @@ def test_data_config_rejects_stride_outside_sliding_window() -> None:
         DataConfig(pretrain_mode="packed", sequence_stride=8).validated()
 
 
+def test_sft_config_rejects_duplicate_tag_delimiters() -> None:
+    with pytest.raises(ValueError, match="delimiters"):
+        SFTConfig(thinking_start="<tag>", thinking_end="<tag>").validated()
+
+
+def test_sft_config_rejects_duplicate_role_names() -> None:
+    with pytest.raises(ValueError, match="role names"):
+        SFTConfig(assistant_role="tool").validated()
+
+
 def test_quickstart_configs_are_loadable() -> None:
     config_dir = Path("configs/quickstart")
     names = sorted(path.name for path in config_dir.glob("*.json"))
@@ -59,6 +231,7 @@ def test_quickstart_configs_are_loadable() -> None:
         "opd.json",
         "ppo-learned-reward.json",
         "ppo-rule-reward.json",
+        "pretrain-moe.json",
         "pretrain.json",
         "reward-model.json",
         "sft.json",

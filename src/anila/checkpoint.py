@@ -60,6 +60,18 @@ def inspect_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
             "n_head": model_config.get("n_head"),
             "n_kv_head": model_config.get("n_kv_head"),
             "n_embd": model_config.get("n_embd"),
+            "rope_base": model_config.get("rope_base"),
+            "rope_scaling": model_config.get("rope_scaling"),
+            "rope_scaling_factor": model_config.get("rope_scaling_factor"),
+            "rope_original_context_length": model_config.get("rope_original_context_length"),
+            "rope_yarn_beta_fast": model_config.get("rope_yarn_beta_fast"),
+            "rope_yarn_beta_slow": model_config.get("rope_yarn_beta_slow"),
+            "rope_yarn_attention_factor": model_config.get("rope_yarn_attention_factor"),
+            "moe_num_experts": model_config.get("moe_num_experts"),
+            "moe_top_k": model_config.get("moe_top_k"),
+            "moe_intermediate_size": model_config.get("moe_intermediate_size"),
+            "moe_normalize_top_k": model_config.get("moe_normalize_top_k"),
+            "moe_aux_loss_coef": model_config.get("moe_aux_loss_coef"),
         }
     if isinstance(train_config, dict):
         summary["train"] = {

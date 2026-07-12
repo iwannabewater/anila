@@ -15,6 +15,14 @@
       "dataset_path": "examples/tiny_preferences.jsonl",
       "batch_size": 2,
       "max_batches": 1
+    },
+    {
+      "name": "tiny-tool-call",
+      "task": "tool_call",
+      "dataset_path": "examples/tiny_tool_call_benchmark.jsonl",
+      "max_batches": 1,
+      "max_new_tokens": 8,
+      "do_sample": false
     }
   ]
 }

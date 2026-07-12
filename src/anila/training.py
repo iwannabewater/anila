@@ -37,6 +37,31 @@ from anila.tokenization import AnilaTokenizer
 console = Console()
 
 
+def _normalize_data_resume_contract(contract: Any) -> Any:
+    from anila.config import DataConfig, DPOConfig, GRPOConfig, OPDConfig, PPOConfig, RewardConfig, SFTConfig
+
+    if not isinstance(contract, dict):
+        return contract
+    config_sections = (
+        ("data_config", DataConfig), ("sft_config", SFTConfig), ("dpo_config", DPOConfig), ("grpo_config", GRPOConfig),
+        ("ppo_config", PPOConfig), ("reward_config", RewardConfig), ("opd_config", OPDConfig),
+    )
+    normalized = dict(contract)
+    for key, config_type in config_sections:
+        value = normalized.get(key)
+        if isinstance(value, dict):
+            normalized[key] = {**asdict(config_type()), **value}
+    return normalized
+
+
+def _add_aux_loss(loss: torch.Tensor, *aux_losses: torch.Tensor | None) -> torch.Tensor:
+    active = [aux_loss for aux_loss in aux_losses if aux_loss is not None]
+    if not active:
+        return loss
+    aux = torch.stack([aux_loss.to(device=loss.device, dtype=loss.dtype).reshape(()) for aux_loss in active]).mean()
+    return loss + aux
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -368,12 +393,14 @@ class Trainer:
                 self.config.reward,
                 reward_type=self.config.grpo.reward_type,
                 device=self.device,
+                sft_config=self.config.sft,
             )
         if self.train_cfg.objective == "ppo":
             self.reward_scorer = build_reward_scorer(
                 self.config.reward,
                 reward_type=self.config.ppo.reward_type,
                 device=self.device,
+                sft_config=self.config.sft,
             )
         if self.train_cfg.compile:
             self.model = torch.compile(self.model)
@@ -434,8 +461,11 @@ class Trainer:
             raise ValueError("Training dataloader is empty; reduce batch_size or add data")
         if _dataloader_is_empty(self.eval_loader):
             raise ValueError("Evaluation dataloader is empty; reduce batch_size or add validation data")
-        if self._resume_data_state is not None and self._resume_data_state.get("contract") != self._data_resume_contract():
-            raise ValueError("Resume checkpoint data contract does not match the current training data configuration")
+        if self._resume_data_state is not None:
+            resume_contract = _normalize_data_resume_contract(self._resume_data_state.get("contract"))
+            current_contract = _normalize_data_resume_contract(self._data_resume_contract())
+            if resume_contract != current_contract:
+                raise ValueError("Resume checkpoint data contract does not match the current training data configuration")
         self.train_iterator = ResumableDataIterator(
             self.train_loader,
             self.train_data_generator,
@@ -694,10 +724,11 @@ class Trainer:
         if self.train_cfg.objective == "distill" and self.config.distill.mode == "soft":
             if self.teacher_model is None:
                 raise RuntimeError("teacher model is not loaded")
-            student_logits = self.model(x).logits
+            student_output = self.model(x)
             with torch.no_grad():
                 teacher_logits = self.teacher_model(x).logits
-            return soft_distillation_loss(student_logits, teacher_logits, y, self.config.distill).loss
+            loss = soft_distillation_loss(student_output.logits, teacher_logits, y, self.config.distill).loss
+            return _add_aux_loss(loss, student_output.aux_loss)
         loss = self.model(x, targets=y).loss
         if loss is None:
             raise RuntimeError("model did not return a training loss")
@@ -763,18 +794,21 @@ class Trainer:
     ) -> torch.Tensor:
         if self.reference_model is None:
             raise RuntimeError("reference model is not loaded")
-        policy_chosen_logps = sequence_logprobs(self.model(chosen_input_ids).logits, chosen_labels)
-        policy_rejected_logps = sequence_logprobs(self.model(rejected_input_ids).logits, rejected_labels)
+        policy_chosen = self.model(chosen_input_ids)
+        policy_rejected = self.model(rejected_input_ids)
+        policy_chosen_logps = sequence_logprobs(policy_chosen.logits, chosen_labels)
+        policy_rejected_logps = sequence_logprobs(policy_rejected.logits, rejected_labels)
         with torch.no_grad():
             reference_chosen_logps = sequence_logprobs(self.reference_model(chosen_input_ids).logits, chosen_labels)
             reference_rejected_logps = sequence_logprobs(self.reference_model(rejected_input_ids).logits, rejected_labels)
-        return dpo_loss(
+        loss = dpo_loss(
             policy_chosen_logps,
             policy_rejected_logps,
             reference_chosen_logps,
             reference_rejected_logps,
             self.config.dpo,
         ).loss
+        return _add_aux_loss(loss, policy_chosen.aux_loss, policy_rejected.aux_loss)
 
     def _compute_reward_model_loss(
         self,
@@ -783,9 +817,9 @@ class Trainer:
         rejected_input_ids: torch.Tensor,
         rejected_labels: torch.Tensor,
     ) -> torch.Tensor:
-        chosen_scores = self.model(chosen_input_ids, chosen_labels).scores
-        rejected_scores = self.model(rejected_input_ids, rejected_labels).scores
-        return reward_model_loss(chosen_scores, rejected_scores).loss
+        chosen = self.model(chosen_input_ids, chosen_labels)
+        rejected = self.model(rejected_input_ids, rejected_labels)
+        return _add_aux_loss(reward_model_loss(chosen.scores, rejected.scores).loss, chosen.aux_loss, rejected.aux_loss)
 
     def _compute_opd_loss(
         self,
@@ -806,10 +840,11 @@ class Trainer:
             top_k=cfg.top_k,
             top_p=cfg.top_p,
         )
-        student_logits = self.model(rollout_input_ids).logits
+        student_output = self.model(rollout_input_ids)
         with torch.no_grad():
             teacher_logits = self.teacher_model(rollout_input_ids).logits
-        return on_policy_distillation_loss(student_logits, teacher_logits, rollout_labels, cfg).loss
+        loss = on_policy_distillation_loss(student_output.logits, teacher_logits, rollout_labels, cfg).loss
+        return _add_aux_loss(loss, student_output.aux_loss)
 
     def _compute_grpo_loss(
         self,
@@ -824,7 +859,8 @@ class Trainer:
             prompt_lengths,
             expected,
         )
-        policy_logps = sequence_logprobs(self.model(rollout_input_ids).logits, rollout_labels)
+        policy_output = self.model(rollout_input_ids)
+        policy_logps = sequence_logprobs(policy_output.logits, rollout_labels)
         with torch.no_grad():
             reference_logps = sequence_logprobs(self.reference_model(rollout_input_ids).logits, rollout_labels)
         reward_groups = rewards.view(prompt_input_ids.size(0), self.config.grpo.num_generations)
@@ -832,7 +868,7 @@ class Trainer:
             reward_groups,
             normalize=self.config.grpo.normalize_advantages,
         ).reshape(-1)
-        return grpo_loss(
+        loss = grpo_loss(
             policy_logps,
             policy_logps.detach(),
             reference_logps,
@@ -840,6 +876,7 @@ class Trainer:
             rewards,
             self.config.grpo,
         ).loss
+        return _add_aux_loss(loss, policy_output.aux_loss)
 
     def _compute_ppo_loss(
         self,
@@ -874,7 +911,7 @@ class Trainer:
         policy_value_output = self.model(rollout_input_ids)
         policy_logprobs = token_logprobs(policy_value_output.logits, rollout_labels)
         entropy = token_entropy(policy_value_output.logits)
-        return ppo_loss(
+        loss = ppo_loss(
             policy_logprobs,
             old_logprobs,
             policy_value_output.values,
@@ -885,6 +922,7 @@ class Trainer:
             response_mask,
             cfg,
         ).loss
+        return _add_aux_loss(loss, policy_value_output.aux_loss)
 
     def _build_ppo_rollouts(
         self,
@@ -994,7 +1032,10 @@ class Trainer:
                         eos_id=self.tokenizer.eos_id,
                     )[0]
                     response_ids = generated[prompt_len:]
-                    response = self.tokenizer.decode(response_ids.tolist())
+                    response = self.tokenizer.decode(
+                        response_ids.tolist(),
+                        preserve_added_special_tokens=self._preserve_rollout_response_special_tokens(),
+                    )
                     responses.append(response)
                     targets.append(target)
 
@@ -1022,6 +1063,13 @@ class Trainer:
         input_batch, label_batch = self._pad_rollout_pairs(rollout_inputs, rollout_labels)
         reward_input_batch, reward_label_batch = self._pad_rollout_pairs(reward_inputs, reward_labels)
         return input_batch, label_batch, reward_input_batch, reward_label_batch, responses, targets
+
+    def _preserve_rollout_response_special_tokens(self) -> bool:
+        if self.train_cfg.objective == "grpo":
+            return self.config.grpo.reward_type == "tool_call"
+        if self.train_cfg.objective == "ppo":
+            return self.config.ppo.reward_type == "tool_call"
+        return False
 
     def _pad_rollout_pairs(
         self,

@@ -94,6 +94,51 @@ def test_tiny_training_integration(tmp_path: Path) -> None:
     next(legacy_resumed.train_iterator)
 
 
+def test_tiny_moe_training_integration(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(("anila routes tiny tokens through experts\n" * 80), encoding="utf-8")
+    tokenizer_dir = tmp_path / "tokenizer"
+    train_byte_bpe([corpus], tokenizer_dir, vocab_size=300, min_frequency=1)
+
+    run = RunConfig(
+        model=ModelConfig(
+            vocab_size=300,
+            context_length=16,
+            n_layer=1,
+            n_head=2,
+            n_kv_head=1,
+            n_embd=32,
+            moe_num_experts=4,
+            moe_top_k=2,
+            moe_intermediate_size=48,
+            moe_aux_loss_coef=0.01,
+        ),
+        train=TrainConfig(
+            dataset_path=str(corpus),
+            tokenizer_path=str(tokenizer_dir),
+            out_dir=str(tmp_path / "moe-run"),
+            batch_size=2,
+            max_steps=1,
+            warmup_steps=1,
+            eval_interval=1,
+            save_interval=1,
+            log_interval=1,
+            device="cpu",
+            dtype="float32",
+        ),
+        data=DataConfig(pretrain_mode="packed"),
+    )
+
+    Trainer(run).train()
+    payload = load_checkpoint_payload(tmp_path / "moe-run" / "checkpoints" / "latest.pt")
+
+    assert payload["model_config"]["moe_num_experts"] == 4
+    assert payload["model_config"]["moe_top_k"] == 2
+    assert payload["model_config"]["moe_intermediate_size"] == 48
+    assert any(name.endswith("mlp.router.weight") for name in payload["model"])
+    assert any("mlp.experts.0.gate_proj.weight" in name for name in payload["model"])
+
+
 def test_resume_replays_next_shuffled_batch_mid_epoch(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(
@@ -223,6 +268,27 @@ def test_tiny_sft_training_integration(tmp_path: Path) -> None:
     assert payload["schema_version"] == 1
     assert payload["objective"] == "sft"
     assert payload["sft_config"]["format"] == "auto"
+
+    legacy_checkpoint = tmp_path / "sft-legacy-contract.pt"
+    legacy_payload = load_checkpoint_payload(checkpoint)
+    legacy_sft_contract = legacy_payload["data_state"]["contract"]["sft_config"]
+    for key in (
+        "reasoning_key",
+        "tool_calls_key",
+        "tool_role",
+        "tool_prefix",
+        "thinking_start",
+        "thinking_end",
+        "tool_call_start",
+        "tool_call_end",
+        "tool_response_start",
+        "tool_response_end",
+    ):
+        legacy_sft_contract.pop(key)
+    torch.save(legacy_payload, legacy_checkpoint)
+
+    resumed = Trainer(replace(run, train=replace(run.train, resume=str(legacy_checkpoint), max_steps=3)))
+    assert resumed.start_step == 2
 
 
 def test_tiny_lora_sft_training_integration(tmp_path: Path) -> None:
@@ -667,7 +733,14 @@ def test_grpo_and_ppo_can_use_learned_reward_scorer_with_prompt_only_data(tmp_pa
             device="cpu",
             dtype="float32",
         ),
-        grpo=GRPOConfig(num_generations=2, max_new_tokens=2, temperature=1.0, top_k=20),
+        grpo=GRPOConfig(
+            num_generations=2,
+            max_new_tokens=2,
+            temperature=1.0,
+            top_k=20,
+            loss_type="cispo",
+            cispo_ratio_cap=2.0,
+        ),
         reward=learned_reward,
     )
     trainer = Trainer(grpo_run)
@@ -762,13 +835,22 @@ def test_tiny_grpo_training_integration(tmp_path: Path) -> None:
             device="cpu",
             dtype="float32",
         ),
-        grpo=GRPOConfig(num_generations=2, max_new_tokens=2, temperature=1.0, top_k=20),
+        grpo=GRPOConfig(
+            num_generations=2,
+            max_new_tokens=2,
+            temperature=1.0,
+            top_k=20,
+            loss_type="cispo",
+            cispo_ratio_cap=2.0,
+        ),
     )
     Trainer(grpo_run).train()
     payload = torch.load(tmp_path / "grpo-run" / "checkpoints" / "latest.pt", map_location="cpu")
 
     assert payload["objective"] == "grpo"
     assert payload["grpo_config"]["num_generations"] == 2
+    assert payload["grpo_config"]["loss_type"] == "cispo"
+    assert payload["grpo_config"]["cispo_ratio_cap"] == 2.0
 
 
 def test_grpo_requires_policy_initial_checkpoint(tmp_path: Path) -> None:

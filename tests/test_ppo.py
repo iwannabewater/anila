@@ -16,6 +16,29 @@ def test_policy_value_model_returns_logits_and_values() -> None:
 
     assert out.logits.shape == (2, 8, cfg.vocab_size)
     assert out.values.shape == (2, 8)
+    assert out.aux_loss is None
+
+
+def test_policy_value_model_forwards_moe_aux_loss() -> None:
+    cfg = ModelConfig(
+        vocab_size=64,
+        context_length=16,
+        n_layer=1,
+        n_head=4,
+        n_kv_head=2,
+        n_embd=32,
+        moe_num_experts=4,
+        moe_top_k=2,
+        moe_aux_loss_coef=0.05,
+    ).validated()
+    model = PolicyValueModel(AnilaLM(cfg))
+    model.train()
+    x = torch.randint(0, cfg.vocab_size, (2, 8))
+
+    out = model(x)
+
+    assert out.aux_loss is not None
+    assert out.aux_loss.item() > 0
 
 
 def test_token_logprobs_masks_ignored_labels() -> None:

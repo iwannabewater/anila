@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
@@ -13,6 +14,51 @@ SUPPORTED_DATA_OBJECTIVES = {"pretrain", "sft"}
 SUPPORTED_PRETRAIN_DATA_MODES = {"sliding_window", "packed", "streaming"}
 
 
+def _validate_positive_number(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{name} must be a positive number")
+    if value <= 0 or not math.isfinite(value):
+        raise ValueError(f"{name} must be positive")
+
+
+def _validate_non_negative_number(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{name} must be a non-negative number")
+    if value < 0 or not math.isfinite(value):
+        raise ValueError(f"{name} must be finite and non-negative")
+
+
+def _validate_positive_int(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be a positive integer")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+
+
+def _validate_non_negative_int(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{name} cannot be negative")
+
+
+def _validate_probability(value: object, name: str, *, include_zero: bool = True, include_one: bool = True) -> None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        interval = _probability_interval(include_zero=include_zero, include_one=include_one)
+        raise ValueError(f"{name} must be finite and in {interval}")
+    lower_ok = value >= 0.0 if include_zero else value > 0.0
+    upper_ok = value <= 1.0 if include_one else value < 1.0
+    if not (lower_ok and upper_ok):
+        interval = _probability_interval(include_zero=include_zero, include_one=include_one)
+        raise ValueError(f"{name} must be in {interval}")
+
+
+def _probability_interval(*, include_zero: bool, include_one: bool) -> str:
+    left = "[" if include_zero else "("
+    right = "]" if include_one else ")"
+    return f"{left}0, 1{right}"
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     vocab_size: int = 512
@@ -23,31 +69,98 @@ class ModelConfig:
     n_embd: int = 256
     dropout: float = 0.0
     rope_base: float = 10000.0
+    rope_scaling: str | None = None
+    rope_scaling_factor: float = 1.0
+    rope_original_context_length: int | None = None
+    rope_yarn_beta_fast: float = 32.0
+    rope_yarn_beta_slow: float = 1.0
+    rope_yarn_attention_factor: float = 1.0
     bias: bool = False
     tie_embeddings: bool = True
+    moe_num_experts: int = 0
+    moe_top_k: int = 1
+    moe_intermediate_size: int | None = None
+    moe_normalize_top_k: bool = True
+    moe_aux_loss_coef: float = 0.0
 
     def validated(self) -> ModelConfig:
         n_kv_head = self.n_head if self.n_kv_head is None else self.n_kv_head
         cfg = replace(self, n_kv_head=n_kv_head)
-        if cfg.vocab_size <= 0:
-            raise ValueError("model.vocab_size must be positive")
-        if cfg.context_length <= 0:
-            raise ValueError("model.context_length must be positive")
-        if cfg.n_layer <= 0:
-            raise ValueError("model.n_layer must be positive")
-        if cfg.n_head <= 0:
-            raise ValueError("model.n_head must be positive")
-        if cfg.n_kv_head is None or cfg.n_kv_head <= 0:
-            raise ValueError("model.n_kv_head must be positive")
+        _validate_positive_int(cfg.vocab_size, "model.vocab_size")
+        _validate_positive_int(cfg.context_length, "model.context_length")
+        _validate_positive_int(cfg.n_layer, "model.n_layer")
+        _validate_positive_int(cfg.n_head, "model.n_head")
+        _validate_positive_int(cfg.n_kv_head, "model.n_kv_head")
         if cfg.n_head % cfg.n_kv_head != 0:
             raise ValueError("model.n_head must be divisible by model.n_kv_head")
+        _validate_positive_int(cfg.n_embd, "model.n_embd")
         if cfg.n_embd % cfg.n_head != 0:
             raise ValueError("model.n_embd must be divisible by model.n_head")
-        if not 0.0 <= cfg.dropout < 1.0:
-            raise ValueError("model.dropout must be in [0, 1)")
-        if cfg.rope_base <= 0:
+        if (cfg.n_embd // cfg.n_head) % 2 != 0:
+            raise ValueError("model.n_embd divided by model.n_head must be even for RoPE")
+        _validate_probability(cfg.dropout, "model.dropout", include_zero=True, include_one=False)
+        if isinstance(cfg.rope_base, bool) or not isinstance(cfg.rope_base, int | float):
+            raise ValueError("model.rope_base must be a positive number")
+        if cfg.rope_base <= 0 or not math.isfinite(cfg.rope_base):
             raise ValueError("model.rope_base must be positive")
+        for name in ("bias", "tie_embeddings"):
+            if not isinstance(getattr(cfg, name), bool):
+                raise ValueError(f"model.{name} must be a boolean")
+        cfg = cfg._validated_rope_scaling()
+        if isinstance(cfg.moe_num_experts, bool) or not isinstance(cfg.moe_num_experts, int):
+            raise ValueError("model.moe_num_experts must be an integer")
+        if cfg.moe_num_experts < 0:
+            raise ValueError("model.moe_num_experts cannot be negative")
+        if isinstance(cfg.moe_top_k, bool) or not isinstance(cfg.moe_top_k, int):
+            raise ValueError("model.moe_top_k must be an integer")
+        if cfg.moe_top_k <= 0:
+            raise ValueError("model.moe_top_k must be positive")
+        if cfg.moe_num_experts == 1:
+            raise ValueError("model.moe_num_experts must be 0 for dense models or at least 2 for MoE")
+        if cfg.moe_num_experts == 0 and cfg.moe_top_k != 1:
+            raise ValueError("model.moe_top_k can only differ from 1 when MoE is enabled")
+        if cfg.moe_num_experts > 0 and cfg.moe_top_k > cfg.moe_num_experts:
+            raise ValueError("model.moe_top_k cannot exceed model.moe_num_experts")
+        if cfg.moe_intermediate_size is not None:
+            if isinstance(cfg.moe_intermediate_size, bool) or not isinstance(cfg.moe_intermediate_size, int):
+                raise ValueError("model.moe_intermediate_size must be a positive integer when provided")
+            if cfg.moe_intermediate_size <= 0:
+                raise ValueError("model.moe_intermediate_size must be positive when provided")
+        if not isinstance(cfg.moe_normalize_top_k, bool):
+            raise ValueError("model.moe_normalize_top_k must be a boolean")
+        _validate_non_negative_number(cfg.moe_aux_loss_coef, "model.moe_aux_loss_coef")
         return cfg
+
+    def _validated_rope_scaling(self) -> ModelConfig:
+        if self.rope_scaling not in (None, "yarn"):
+            raise ValueError("model.rope_scaling must be null or 'yarn'")
+        _validate_positive_number(self.rope_scaling_factor, "model.rope_scaling_factor")
+        _validate_positive_number(self.rope_yarn_beta_fast, "model.rope_yarn_beta_fast")
+        _validate_positive_number(self.rope_yarn_beta_slow, "model.rope_yarn_beta_slow")
+        _validate_positive_number(self.rope_yarn_attention_factor, "model.rope_yarn_attention_factor")
+        if self.rope_scaling is None:
+            if self.rope_scaling_factor != 1.0:
+                raise ValueError("model.rope_scaling_factor requires model.rope_scaling = 'yarn'")
+            if self.rope_original_context_length is not None:
+                raise ValueError("model.rope_original_context_length requires model.rope_scaling = 'yarn'")
+            if self.rope_yarn_beta_fast != 32.0 or self.rope_yarn_beta_slow != 1.0:
+                raise ValueError("model.rope_yarn_beta_* requires model.rope_scaling = 'yarn'")
+            if self.rope_yarn_attention_factor != 1.0:
+                raise ValueError("model.rope_yarn_attention_factor requires model.rope_scaling = 'yarn'")
+            return self
+        if self.rope_scaling_factor <= 1.0:
+            raise ValueError("model.rope_scaling_factor must be greater than 1 when YaRN scaling is enabled")
+        if self.rope_original_context_length is None:
+            raise ValueError("model.rope_original_context_length is required when YaRN scaling is enabled")
+        if isinstance(self.rope_original_context_length, bool) or not isinstance(self.rope_original_context_length, int):
+            raise ValueError("model.rope_original_context_length must be a positive integer")
+        if self.rope_original_context_length <= 0:
+            raise ValueError("model.rope_original_context_length must be positive")
+        if self.rope_original_context_length >= self.context_length:
+            raise ValueError("model.rope_original_context_length must be less than model.context_length")
+        if self.rope_yarn_beta_fast < self.rope_yarn_beta_slow:
+            raise ValueError("model.rope_yarn_beta_fast must be greater than or equal to model.rope_yarn_beta_slow")
+        return self
 
 
 @dataclass(frozen=True)
@@ -94,36 +207,26 @@ class TrainConfig:
             raise ValueError(f"train.objective must be one of: {', '.join(sorted(SUPPORTED_OBJECTIVES))}")
         if self.resume and self.init_from:
             raise ValueError("train.resume and train.init_from cannot both be set")
-        if self.batch_size <= 0:
-            raise ValueError("train.batch_size must be positive")
-        if self.max_steps <= 0:
-            raise ValueError("train.max_steps must be positive")
-        if self.grad_accum_steps <= 0:
-            raise ValueError("train.grad_accum_steps must be positive")
-        if self.learning_rate <= 0:
-            raise ValueError("train.learning_rate must be positive")
-        if not 0.0 <= self.min_lr_ratio <= 1.0:
-            raise ValueError("train.min_lr_ratio must be in [0, 1]")
-        if self.warmup_steps < 0:
-            raise ValueError("train.warmup_steps cannot be negative")
-        if self.weight_decay < 0:
-            raise ValueError("train.weight_decay cannot be negative")
-        if not 0.0 <= self.beta1 < 1.0:
-            raise ValueError("train.beta1 must be in [0, 1)")
-        if not 0.0 <= self.beta2 < 1.0:
-            raise ValueError("train.beta2 must be in [0, 1)")
-        if self.grad_clip < 0:
-            raise ValueError("train.grad_clip cannot be negative")
-        if self.num_workers < 0:
-            raise ValueError("train.num_workers cannot be negative")
+        _validate_non_negative_int(self.seed, "train.seed")
+        _validate_positive_int(self.batch_size, "train.batch_size")
+        _validate_positive_int(self.max_steps, "train.max_steps")
+        _validate_positive_int(self.grad_accum_steps, "train.grad_accum_steps")
+        _validate_positive_number(self.learning_rate, "train.learning_rate")
+        _validate_probability(self.min_lr_ratio, "train.min_lr_ratio")
+        _validate_non_negative_int(self.warmup_steps, "train.warmup_steps")
+        _validate_non_negative_number(self.weight_decay, "train.weight_decay")
+        _validate_probability(self.beta1, "train.beta1", include_zero=True, include_one=False)
+        _validate_probability(self.beta2, "train.beta2", include_zero=True, include_one=False)
+        _validate_non_negative_number(self.grad_clip, "train.grad_clip")
+        _validate_non_negative_int(self.num_workers, "train.num_workers")
         if not isinstance(self.out_dir, str) or not self.out_dir:
             raise ValueError("train.out_dir must be a non-empty string")
         if not isinstance(self.device, str) or not self.device:
             raise ValueError("train.device must be a non-empty string")
-        if self.eval_interval <= 0 or self.save_interval <= 0 or self.log_interval <= 0:
-            raise ValueError("train intervals must be positive")
-        if self.eval_batches <= 0:
-            raise ValueError("train.eval_batches must be positive")
+        _validate_positive_int(self.eval_interval, "train.eval_interval")
+        _validate_positive_int(self.save_interval, "train.save_interval")
+        _validate_positive_int(self.log_interval, "train.log_interval")
+        _validate_positive_int(self.eval_batches, "train.eval_batches")
         if self.dtype not in {"auto", "float32", "float16", "bfloat16"}:
             raise ValueError("train.dtype must be auto, float32, float16, or bfloat16")
         for name in ("compile", "allow_tf32", "gradient_checkpointing", "fused_adamw"):
@@ -135,10 +238,7 @@ class TrainConfig:
             if self.keep_last_checkpoints <= 0:
                 raise ValueError("train.keep_last_checkpoints must be positive when provided")
         if self.ema_decay is not None:
-            if isinstance(self.ema_decay, bool) or not isinstance(self.ema_decay, int | float):
-                raise ValueError("train.ema_decay must be a float in (0, 1) when provided")
-            if not 0.0 < float(self.ema_decay) < 1.0:
-                raise ValueError("train.ema_decay must be in (0, 1) when provided")
+            _validate_probability(self.ema_decay, "train.ema_decay", include_zero=False, include_one=False)
         return self
 
 
@@ -174,16 +274,16 @@ class LoRAConfig:
     save_adapter: bool = True
 
     def validated(self) -> LoRAConfig:
-        if self.rank <= 0:
-            raise ValueError("lora.rank must be positive")
-        if self.alpha <= 0:
-            raise ValueError("lora.alpha must be positive")
-        if not 0.0 <= self.dropout < 1.0:
-            raise ValueError("lora.dropout must be in [0, 1)")
+        _validate_positive_int(self.rank, "lora.rank")
+        _validate_positive_number(self.alpha, "lora.alpha")
+        _validate_probability(self.dropout, "lora.dropout", include_zero=True, include_one=False)
         if not isinstance(self.target_modules, list) or not self.target_modules:
             raise ValueError("lora.target_modules must be a non-empty list of strings")
         if any(not isinstance(name, str) or not name for name in self.target_modules):
             raise ValueError("lora.target_modules entries must be non-empty strings")
+        for name in ("enabled", "train_base", "train_bias", "save_adapter"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"lora.{name} must be a boolean")
         return self
 
 
@@ -209,12 +309,9 @@ class DistillConfig:
             not isinstance(self.teacher_checkpoint, str) or not self.teacher_checkpoint
         ):
             raise ValueError("distill.teacher_checkpoint must be a non-empty string when provided")
-        if self.temperature <= 0:
-            raise ValueError("distill.temperature must be positive")
-        if self.kl_weight < 0:
-            raise ValueError("distill.kl_weight cannot be negative")
-        if self.ce_weight < 0:
-            raise ValueError("distill.ce_weight cannot be negative")
+        _validate_positive_number(self.temperature, "distill.temperature")
+        _validate_non_negative_number(self.kl_weight, "distill.kl_weight")
+        _validate_non_negative_number(self.ce_weight, "distill.ce_weight")
         if self.kl_weight == 0 and self.ce_weight == 0:
             raise ValueError("at least one of distill.kl_weight or distill.ce_weight must be positive")
         return self
@@ -244,22 +341,15 @@ class OPDConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"opd.{name} must be a non-empty string")
-        if self.num_rollouts <= 0:
-            raise ValueError("opd.num_rollouts must be positive")
-        if self.max_new_tokens <= 0:
-            raise ValueError("opd.max_new_tokens must be positive")
-        if self.temperature <= 0:
-            raise ValueError("opd.temperature must be positive")
-        if self.top_k is not None and self.top_k <= 0:
-            raise ValueError("opd.top_k must be positive when provided")
-        if not 0.0 < self.top_p <= 1.0:
-            raise ValueError("opd.top_p must be in (0, 1]")
-        if self.distill_temperature <= 0:
-            raise ValueError("opd.distill_temperature must be positive")
-        if self.kl_weight < 0:
-            raise ValueError("opd.kl_weight cannot be negative")
-        if self.ce_weight < 0:
-            raise ValueError("opd.ce_weight cannot be negative")
+        _validate_positive_int(self.num_rollouts, "opd.num_rollouts")
+        _validate_positive_int(self.max_new_tokens, "opd.max_new_tokens")
+        _validate_positive_number(self.temperature, "opd.temperature")
+        if self.top_k is not None:
+            _validate_positive_int(self.top_k, "opd.top_k")
+        _validate_probability(self.top_p, "opd.top_p", include_zero=False)
+        _validate_positive_number(self.distill_temperature, "opd.distill_temperature")
+        _validate_non_negative_number(self.kl_weight, "opd.kl_weight")
+        _validate_non_negative_number(self.ce_weight, "opd.ce_weight")
         if self.kl_weight == 0 and self.ce_weight == 0:
             raise ValueError("at least one of opd.kl_weight or opd.ce_weight must be positive")
         return self
@@ -275,8 +365,7 @@ class DPOConfig:
     system_key: str = "system"
 
     def validated(self) -> DPOConfig:
-        if self.beta <= 0:
-            raise ValueError("dpo.beta must be positive")
+        _validate_positive_number(self.beta, "dpo.beta")
         if self.reference_checkpoint is not None and (
             not isinstance(self.reference_checkpoint, str) or not self.reference_checkpoint
         ):
@@ -305,10 +394,17 @@ class GRPOConfig:
     top_p: float = 1.0
     clip_range: float = 0.2
     normalize_advantages: bool = True
+    loss_type: str = "grpo"
+    cispo_ratio_cap: float = 5.0
 
     def validated(self) -> GRPOConfig:
-        if self.beta < 0:
-            raise ValueError("grpo.beta cannot be negative")
+        if (
+            isinstance(self.beta, bool)
+            or not isinstance(self.beta, int | float)
+            or self.beta < 0
+            or not math.isfinite(self.beta)
+        ):
+            raise ValueError("grpo.beta must be finite and non-negative")
         if self.reference_checkpoint is not None and (
             not isinstance(self.reference_checkpoint, str) or not self.reference_checkpoint
         ):
@@ -317,20 +413,22 @@ class GRPOConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"grpo.{name} must be a non-empty string")
-        if self.reward_type not in {"contains", "exact_match"}:
-            raise ValueError("grpo.reward_type must be contains or exact_match")
+        if self.reward_type not in {"contains", "exact_match", "tool_call"}:
+            raise ValueError("grpo.reward_type must be contains, exact_match, or tool_call")
+        if self.loss_type not in {"grpo", "cispo"}:
+            raise ValueError("grpo.loss_type must be grpo or cispo")
+        _validate_positive_int(self.num_generations, "grpo.num_generations")
         if self.num_generations < 2:
             raise ValueError("grpo.num_generations must be at least 2")
-        if self.max_new_tokens <= 0:
-            raise ValueError("grpo.max_new_tokens must be positive")
-        if self.temperature <= 0:
-            raise ValueError("grpo.temperature must be positive")
-        if self.top_k is not None and self.top_k <= 0:
-            raise ValueError("grpo.top_k must be positive when provided")
-        if not 0.0 < self.top_p <= 1.0:
-            raise ValueError("grpo.top_p must be in (0, 1]")
-        if self.clip_range < 0:
-            raise ValueError("grpo.clip_range cannot be negative")
+        _validate_positive_int(self.max_new_tokens, "grpo.max_new_tokens")
+        _validate_positive_number(self.temperature, "grpo.temperature")
+        if self.top_k is not None:
+            _validate_positive_int(self.top_k, "grpo.top_k")
+        _validate_probability(self.top_p, "grpo.top_p", include_zero=False)
+        _validate_non_negative_number(self.clip_range, "grpo.clip_range")
+        _validate_positive_number(self.cispo_ratio_cap, "grpo.cispo_ratio_cap")
+        if not isinstance(self.normalize_advantages, bool):
+            raise ValueError("grpo.normalize_advantages must be a boolean")
         return self
 
 
@@ -356,8 +454,7 @@ class PPOConfig:
     normalize_advantages: bool = True
 
     def validated(self) -> PPOConfig:
-        if self.beta < 0:
-            raise ValueError("ppo.beta cannot be negative")
+        _validate_non_negative_number(self.beta, "ppo.beta")
         if self.reference_checkpoint is not None and (
             not isinstance(self.reference_checkpoint, str) or not self.reference_checkpoint
         ):
@@ -366,30 +463,22 @@ class PPOConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"ppo.{name} must be a non-empty string")
-        if self.reward_type not in {"contains", "exact_match"}:
-            raise ValueError("ppo.reward_type must be contains or exact_match")
-        if self.num_rollouts <= 0:
-            raise ValueError("ppo.num_rollouts must be positive")
-        if self.max_new_tokens <= 0:
-            raise ValueError("ppo.max_new_tokens must be positive")
-        if self.temperature <= 0:
-            raise ValueError("ppo.temperature must be positive")
-        if self.top_k is not None and self.top_k <= 0:
-            raise ValueError("ppo.top_k must be positive when provided")
-        if not 0.0 < self.top_p <= 1.0:
-            raise ValueError("ppo.top_p must be in (0, 1]")
-        if not 0.0 <= self.gamma <= 1.0:
-            raise ValueError("ppo.gamma must be in [0, 1]")
-        if not 0.0 <= self.gae_lambda <= 1.0:
-            raise ValueError("ppo.gae_lambda must be in [0, 1]")
-        if self.clip_range < 0:
-            raise ValueError("ppo.clip_range cannot be negative")
-        if self.value_clip_range < 0:
-            raise ValueError("ppo.value_clip_range cannot be negative")
-        if self.value_loss_coef < 0:
-            raise ValueError("ppo.value_loss_coef cannot be negative")
-        if self.entropy_coef < 0:
-            raise ValueError("ppo.entropy_coef cannot be negative")
+        if self.reward_type not in {"contains", "exact_match", "tool_call"}:
+            raise ValueError("ppo.reward_type must be contains, exact_match, or tool_call")
+        _validate_positive_int(self.num_rollouts, "ppo.num_rollouts")
+        _validate_positive_int(self.max_new_tokens, "ppo.max_new_tokens")
+        _validate_positive_number(self.temperature, "ppo.temperature")
+        if self.top_k is not None:
+            _validate_positive_int(self.top_k, "ppo.top_k")
+        _validate_probability(self.top_p, "ppo.top_p", include_zero=False)
+        _validate_probability(self.gamma, "ppo.gamma")
+        _validate_probability(self.gae_lambda, "ppo.gae_lambda")
+        _validate_non_negative_number(self.clip_range, "ppo.clip_range")
+        _validate_non_negative_number(self.value_clip_range, "ppo.value_clip_range")
+        _validate_non_negative_number(self.value_loss_coef, "ppo.value_loss_coef")
+        _validate_non_negative_number(self.entropy_coef, "ppo.entropy_coef")
+        if not isinstance(self.normalize_advantages, bool):
+            raise ValueError("ppo.normalize_advantages must be a boolean")
         return self
 
 
@@ -413,8 +502,8 @@ class RewardConfig:
             raise ValueError("reward.checkpoint must be a non-empty string when provided")
         for name in ("scale", "bias"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                raise ValueError(f"reward.{name} must be a number")
+            if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+                raise ValueError(f"reward.{name} must be a finite number")
         if self.scale == 0:
             raise ValueError("reward.scale cannot be zero")
         for name in ("prompt_key", "chosen_key", "rejected_key", "system_key"):
@@ -433,12 +522,22 @@ class SFTConfig:
     messages_key: str = "messages"
     role_key: str = "role"
     content_key: str = "content"
+    reasoning_key: str = "reasoning_content"
+    tool_calls_key: str = "tool_calls"
     system_role: str = "system"
     user_role: str = "user"
     assistant_role: str = "assistant"
+    tool_role: str = "tool"
     system_prefix: str = "System:"
     user_prefix: str = "User:"
     assistant_prefix: str = "Assistant:"
+    tool_prefix: str = "Tool:"
+    thinking_start: str = "<think>"
+    thinking_end: str = "</think>"
+    tool_call_start: str = "<tool_call>"
+    tool_call_end: str = "</tool_call>"
+    tool_response_start: str = "<tool_response>"
+    tool_response_end: str = "</tool_response>"
 
     def validated(self) -> SFTConfig:
         if self.format not in {"auto", "prompt_response", "messages"}:
@@ -447,6 +546,19 @@ class SFTConfig:
             value = getattr(self, config_field.name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"sft.{config_field.name} must be a non-empty string")
+        roles = [self.system_role, self.user_role, self.assistant_role, self.tool_role]
+        if len(set(roles)) != len(roles):
+            raise ValueError("sft role names must be distinct")
+        delimiters = [
+            self.thinking_start,
+            self.thinking_end,
+            self.tool_call_start,
+            self.tool_call_end,
+            self.tool_response_start,
+            self.tool_response_end,
+        ]
+        if len(set(delimiters)) != len(delimiters):
+            raise ValueError("sft tag delimiters must be distinct")
         return self
 
 

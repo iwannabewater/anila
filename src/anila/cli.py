@@ -13,8 +13,8 @@ from anila.benchmark import evaluate_benchmark_suite
 from anila.checkpoint import export_safetensors_checkpoint, inspect_checkpoint, merge_lora_checkpoint
 from anila.config import load_run_config
 from anila.evaluation import evaluate_lm_checkpoint, evaluate_policy_preferences, evaluate_reward_model
-from anila.sampling import generate_text, sample_text, stream_text
-from anila.tokenization import train_byte_bpe
+from anila.sampling import generate_chat, generate_text, sample_text, stream_text
+from anila.tokenization import DEFAULT_CHAT_SPECIAL_TOKENS, train_byte_bpe
 from anila.training import train
 
 app = typer.Typer(help="Anila: from-scratch language-model training.", no_args_is_help=True)
@@ -36,6 +36,16 @@ class EvaluationTask(StrEnum):
 class LanguageModelObjective(StrEnum):
     pretrain = "pretrain"
     sft = "sft"
+
+
+def _load_tool_specs(path: Path | None) -> list[dict] | None:
+    if path is None:
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    tools = [data] if isinstance(data, dict) else data
+    if not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools):
+        raise typer.BadParameter("tools file must contain a JSON object or list of objects", param_hint="--tools")
+    return tools
 
 
 def _version_callback(value: bool) -> None:
@@ -66,9 +76,29 @@ def train_tokenizer(
     out: Annotated[Path, typer.Option("--out", "-o")],
     vocab_size: Annotated[int, typer.Option("--vocab-size")] = 8192,
     min_frequency: Annotated[int, typer.Option("--min-frequency")] = 2,
+    special_token: Annotated[
+        list[str] | None,
+        typer.Option("--special-token", help="Add an extra tokenizer special token. Repeat for multiple tokens."),
+    ] = None,
+    chat_special_tokens: Annotated[
+        bool,
+        typer.Option(
+            "--chat-special-tokens/--no-chat-special-tokens",
+            help="Add built-in <think>, <tool_call>, and <tool_response> tags as tokenizer special tokens.",
+        ),
+    ] = False,
 ) -> None:
     """Train a byte-level BPE tokenizer."""
-    tokenizer = train_byte_bpe(input, out, vocab_size=vocab_size, min_frequency=min_frequency)
+    extra_special_tokens = list(special_token or ())
+    if chat_special_tokens:
+        extra_special_tokens.extend(DEFAULT_CHAT_SPECIAL_TOKENS)
+    tokenizer = train_byte_bpe(
+        input,
+        out,
+        vocab_size=vocab_size,
+        min_frequency=min_frequency,
+        extra_special_tokens=extra_special_tokens,
+    )
     typer.echo(f"saved tokenizer to {out} ({tokenizer.vocab_size} tokens)")
 
 
@@ -183,6 +213,66 @@ def sample(
         use_ema=use_ema,
     )
     typer.echo(text)
+
+
+@model_app.command("chat")
+def chat_model(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-c", exists=True, readable=True)],
+    tokenizer: Annotated[Path, typer.Option("--tokenizer", "-t", exists=True, readable=True)],
+    prompt: Annotated[str, typer.Option("--prompt", "-p")],
+    system: Annotated[str | None, typer.Option("--system")] = None,
+    tools: Annotated[Path | None, typer.Option("--tools", exists=True, readable=True)] = None,
+    max_new_tokens: Annotated[int, typer.Option("--max-new-tokens")] = 80,
+    temperature: Annotated[float, typer.Option("--temperature")] = 0.8,
+    top_k: Annotated[int, typer.Option("--top-k", help="Use 0 to disable top-k filtering.")] = 50,
+    top_p: Annotated[float, typer.Option("--top-p")] = 1.0,
+    min_p: Annotated[float, typer.Option("--min-p")] = 0.0,
+    repetition_penalty: Annotated[float, typer.Option("--repetition-penalty")] = 1.0,
+    num_beams: Annotated[int, typer.Option("--num-beams", help="Use values above 1 for deterministic beam search.")] = 1,
+    length_penalty: Annotated[float, typer.Option("--length-penalty")] = 1.0,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+    do_sample: Annotated[bool, typer.Option("--sample/--greedy")] = True,
+    seed: Annotated[int | None, typer.Option("--seed")] = None,
+    stop: Annotated[list[str] | None, typer.Option("--stop", help="Stop when this text appears in the completion.")] = None,
+    json_output: Annotated[bool, typer.Option("--json/--text", help="Print parsed chat output as JSON.")] = False,
+    use_ema: Annotated[bool, typer.Option("--ema/--no-ema", help="Use EMA model weights when present.")] = False,
+    open_thinking: Annotated[bool, typer.Option("--open-thinking/--closed-thinking")] = False,
+) -> None:
+    """Generate a chat response using Anila's native chat/tool tags."""
+    if top_k < 0:
+        raise typer.BadParameter("top_k must be non-negative; use 0 to disable top-k filtering", param_hint="--top-k")
+    if num_beams <= 0:
+        raise typer.BadParameter("num_beams must be positive", param_hint="--num-beams")
+    if length_penalty < 0:
+        raise typer.BadParameter("length_penalty cannot be negative", param_hint="--length-penalty")
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    result = generate_chat(
+        checkpoint=checkpoint,
+        tokenizer_path=tokenizer,
+        messages=messages,
+        tools=_load_tool_specs(tools),
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=None if top_k == 0 else top_k,
+        top_p=top_p,
+        min_p=min_p,
+        repetition_penalty=repetition_penalty,
+        num_beams=num_beams,
+        length_penalty=length_penalty,
+        device=device,
+        do_sample=do_sample,
+        seed=seed,
+        stop_strings=stop,
+        use_ema=use_ema,
+        open_thinking=open_thinking,
+    )
+    if json_output:
+        typer.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
+        return
+    typer.echo(result.text)
 
 
 @model_app.command("evaluate")

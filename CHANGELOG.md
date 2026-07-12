@@ -2,7 +2,20 @@
 
 ## Unreleased
 
-No changes yet.
+- No unreleased changes yet.
+
+## v0.1.9 - 2026-07-13
+
+- Added optional tokenizer chat special tokens for `<think>`, `<tool_call>`, and `<tool_response>` tags.
+- Extended SFT chat-message records with native `reasoning_content`, `tool_calls`, and `tool` role handling while keeping tool responses masked as context.
+- Added native chat prompt rendering, reasoning/tool-call output parsing, `generate_chat`, and `anila model chat` for local chat-style inference.
+- Added `generate_tool_chat` for local tool-use loops over caller-supplied Python callbacks with round and per-turn call caps.
+- Added `tool_call` rule rewards for GRPO/PPO prompt data with native chat/tool prompt rendering and structured expected targets.
+- Added a lightweight `tool_call` benchmark task type and a tiny quickstart tool-call benchmark record.
+- Added `AnilaLM.forward(..., logits_to_keep=N)` and wired generation to request only next-token logits.
+- Added optional native YaRN-style RoPE scaling with explicit config validation and checkpoint inspection metadata.
+- Added optional native routed-MoE feed-forward layers with top-k routing, weighted router balance loss, checkpoint inspection metadata, and `configs/quickstart/pretrain-moe.json`.
+- Added `grpo.loss_type = "cispo"` for the native CISPO loss variant on the existing GRPO rollout path.
 
 ## v0.1.8 - 2026-06-23
 

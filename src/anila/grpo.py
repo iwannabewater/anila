@@ -49,8 +49,12 @@ def grpo_loss(
         raise ValueError("policy, old, reference logprobs, and advantages must have matching shapes")
 
     ratio = torch.exp(policy_logps - old_logps)
-    clipped_ratio = ratio.clamp(1.0 - cfg.clip_range, 1.0 + cfg.clip_range)
-    policy_loss = -torch.minimum(ratio * advantages, clipped_ratio * advantages).mean()
+    if cfg.loss_type == "cispo":
+        clipped_ratio = ratio.clamp(max=cfg.cispo_ratio_cap).detach()
+        policy_loss = -(clipped_ratio * advantages * policy_logps).mean()
+    else:
+        clipped_ratio = ratio.clamp(1.0 - cfg.clip_range, 1.0 + cfg.clip_range)
+        policy_loss = -torch.minimum(ratio * advantages, clipped_ratio * advantages).mean()
 
     reference_policy_logratio = reference_logps - policy_logps
     kl = torch.exp(reference_policy_logratio) - 1.0 - reference_policy_logratio

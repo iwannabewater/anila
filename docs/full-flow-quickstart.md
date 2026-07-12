@@ -1,6 +1,6 @@
 # Full-Flow Quickstart
 
-This guide is the beginner path through Anila's local LLM workflow. It starts with a tokenizer and tiny local data, then walks through pretraining, supervised fine-tuning, adapter fine-tuning, distillation, on-policy distillation, preference optimization, reward modeling, online RL, evaluation, artifact export, and efficient native inference.
+This guide is the beginner path through Anila's local LLM workflow. It starts with a tokenizer and tiny local data, then walks through pretraining, an optional native MoE model variant, supervised fine-tuning, adapter fine-tuning, distillation, on-policy distillation, preference optimization, reward modeling, online RL, evaluation, artifact export, and efficient native inference.
 
 The configs are intentionally small. They are for learning the flow and checking contracts, not for producing a capable model.
 
@@ -12,6 +12,7 @@ Before replacing the example files with your own data, read [Data Contracts](dat
 | --- | --- | --- | --- |
 | Tokenizer | `anila tokenizer train` | `examples/tiny_corpus.txt`, `examples/tiny_sft.jsonl` | `runs/tokenizer/` |
 | Pretraining | `anila model train --config configs/quickstart/pretrain.json` | plain UTF-8 text | base checkpoint |
+| Optional MoE pretraining | `configs/quickstart/pretrain-moe.json` | plain UTF-8 text | routed-MoE checkpoint |
 | SFT | `configs/quickstart/sft.json` | prompt/response JSONL | instruction checkpoint |
 | LoRA SFT | `configs/quickstart/lora-sft.json` | SFT JSONL plus base checkpoint | full checkpoint plus adapter checkpoint |
 | Distillation | `distill-hard-sft.json`, `distill-soft-pretrain.json` | hard labels or teacher logits | student checkpoint |
@@ -44,6 +45,7 @@ uv run anila tokenizer train \
 ```
 
 The tokenizer stage is deliberately first because all later configs point at `runs/tokenizer`.
+When your SFT data uses `<think>`, `<tool_call>`, or `<tool_response>` tags, add `--chat-special-tokens` so those tags are learned as atomic tokenizer entries.
 
 ## 3. Pretrain The Base Model
 
@@ -60,6 +62,14 @@ This trains next-token prediction on plain text. The quickstart pretraining conf
 
 The pretraining checkpoint also includes EMA weights because the config sets `train.ema_decay`.
 
+To exercise the optional native routed-MoE feed-forward path, run:
+
+```bash
+uv run anila model train --config configs/quickstart/pretrain-moe.json
+```
+
+This uses top-k routing over SwiGLU experts and adds the configured router balance loss to the LM objective. It is still a single-process PyTorch recipe, not a distributed MoE runtime.
+
 ## 4. Run Supervised Fine-Tuning
 
 ```bash
@@ -67,6 +77,7 @@ uv run anila model train --config configs/quickstart/sft.json
 ```
 
 SFT reads `examples/tiny_sft.jsonl`. Prompt, system, and user tokens are masked out of the loss; assistant response tokens train the model.
+The same SFT path also accepts chat messages with assistant `reasoning_content`, assistant `tool_calls`, and `tool` role responses. Tool responses stay masked as context.
 
 ## 5. Train A LoRA Adapter
 
@@ -138,7 +149,7 @@ uv run anila model train --config configs/quickstart/grpo-learned-reward.json
 uv run anila model train --config configs/quickstart/ppo-learned-reward.json
 ```
 
-GRPO samples groups of responses per prompt and normalizes rewards inside the group. PPO samples rollouts, applies reference KL penalties, estimates advantages with a value head, and keeps the base LM checkpoint directly sampleable.
+GRPO samples groups of responses per prompt and normalizes rewards inside the group. Set `grpo.loss_type` to `"cispo"` to keep that rollout path while using the CISPO policy loss variant. PPO samples rollouts, applies reference KL penalties, estimates advantages with a value head, and keeps the base LM checkpoint directly sampleable. For agent-style data, set `grpo.reward_type` or `ppo.reward_type` to `"tool_call"` and use the chat/tool prompt records described in `docs/data-contracts.md`.
 
 ## 11. Evaluate And Benchmark
 
@@ -182,6 +193,8 @@ uv run anila model benchmark \
   --suite configs/benchmarks/quickstart.json \
   --max-batches 1
 ```
+
+The quickstart suite includes LM, preference, and one short generated `tool_call` task.
 
 Use `--ema` on evaluation or benchmark commands when the checkpoint contains EMA weights and you want to evaluate that snapshot.
 
@@ -238,6 +251,16 @@ uv run anila model generate \
   --tokenizer runs/tokenizer \
   --prompt "Anila is" \
   --stream
+```
+
+Local chat-style inference with parsed reasoning/tool-call metadata:
+
+```bash
+uv run anila model chat \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "What does Anila train?" \
+  --json
 ```
 
 EMA inference from the pretraining checkpoint:

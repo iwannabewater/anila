@@ -6,13 +6,14 @@ The repository is intentionally small enough to study and modify, while still us
 
 ## Features
 
-- Byte-level BPE tokenizer training.
-- GPT-style causal language model with RMSNorm, RoPE, SwiGLU, grouped-query attention, tied embeddings, KV-cache generation, streaming steps, top-k/top-p sampling, and native beam search.
+- Byte-level BPE tokenizer training with optional chat special tokens for reasoning and tool-call tags.
+- GPT-style causal language model with RMSNorm, RoPE, optional YaRN-style RoPE scaling, SwiGLU, optional routed MoE feed-forward layers, grouped-query attention, tied embeddings, trailing-logit forward slicing, KV-cache generation, streaming steps, top-k/top-p sampling, and native beam search.
 - Single-process trainer with gradient accumulation, mixed precision, TF32 control, optional fused AdamW, optional activation checkpointing, cosine decay, optional EMA weights, RNG-preserving validation, checkpointed random state, resume, and atomic saves.
-- Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, LoRA adapters, hard/soft distillation, on-policy distillation, DPO preference optimization, learned reward models, GRPO, and PPO with a value head.
+- Objective-aware training with plain-text pretraining, response-masked supervised fine-tuning, tool/reasoning chat-message records, LoRA adapters, hard/soft distillation, on-policy distillation, DPO preference optimization, learned reward models, GRPO/CISPO with optional tool-call rule rewards, and PPO with a value head.
 - Pretraining data modes for dense sliding-window sampling, packed fixed-length blocks, and streaming local text files.
 - JSON/TOML run configs and UTF-8 training inputs with strict validation, fail-fast errors, and optional checkpoint retention.
 - Grouped CLI commands for tokenizer training, model training, evaluation, generation, checkpoint inspection, and LoRA checkpoint merge/export.
+- Native chat prompt rendering, parsed reasoning/tool-call output, and caller-supplied Python tool loops with round and per-turn call caps, without a serving dependency.
 - Optional safetensors tensor export with a native Anila manifest, kept outside the core checkpoint loading path.
 - A small top-level Python API for version checks, tokenizer training, native training, checkpoint evaluation, benchmark suites, structured generation, streaming, and sampling.
 - Fast unit tests plus end-to-end integration coverage.
@@ -42,8 +43,20 @@ uv run anila tokenizer train \
   --vocab-size 512 \
   --min-frequency 1
 
+# Optional: keep reasoning and tool-call tags atomic for tool-aware SFT data.
+uv run anila tokenizer train \
+  --input examples/tiny_corpus.txt \
+  --input examples/tiny_sft.jsonl \
+  --out runs/tokenizer \
+  --vocab-size 512 \
+  --min-frequency 1 \
+  --chat-special-tokens
+
 # Run plain next-token pretraining.
 uv run anila model train --config configs/quickstart/pretrain.json
+
+# Optional: pretrain a compact routed-MoE variant.
+uv run anila model train --config configs/quickstart/pretrain-moe.json
 
 # Run response-masked supervised fine-tuning.
 uv run anila model train --config configs/quickstart/sft.json
@@ -119,6 +132,13 @@ uv run anila model generate \
   --json \
   --logprobs
 
+# Render a chat prompt and parse reasoning/tool-call tags from local generation.
+uv run anila model chat \
+  --checkpoint runs/quickstart/sft/checkpoints/latest.pt \
+  --tokenizer runs/tokenizer \
+  --prompt "What does Anila train?" \
+  --json
+
 # Print a JSON checkpoint summary.
 uv run anila checkpoint inspect \
   --checkpoint runs/quickstart/ppo-rule-reward/checkpoints/latest.pt
@@ -141,7 +161,7 @@ uv run anila model benchmark \
 
 The pretraining quickstart config writes checkpoints under `runs/quickstart/pretrain/`. Each run also writes a reproducibility snapshot to `config.json` and structured metrics to `metrics.jsonl` under its output directory. Training outputs are ignored by Git.
 
-The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model benchmark`, `anila model generate`, `anila checkpoint inspect`, `anila checkpoint merge-lora`, and `anila checkpoint export-safetensors`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
+The canonical CLI is grouped by resource: `anila tokenizer train`, `anila model train`, `anila model evaluate`, `anila model benchmark`, `anila model generate`, `anila model chat`, `anila checkpoint inspect`, `anila checkpoint merge-lora`, and `anila checkpoint export-safetensors`. `anila --version` prints the installed package version. Older flat commands (`train-tokenizer`, `train`, `sample`, `inspect-checkpoint`, `merge-lora-checkpoint`) remain available as compatibility aliases.
 
 ## Python API
 
@@ -150,7 +170,7 @@ Common entry points are exported from the package root for lightweight scripts a
 ```python
 from pathlib import Path
 
-from anila import generate_text, load_run_config, train, train_byte_bpe
+from anila import generate_chat, generate_text, generate_tool_chat, load_run_config, train, train_byte_bpe
 
 train_byte_bpe([Path("examples/tiny_corpus.txt")], Path("runs/tokenizer"), vocab_size=512, min_frequency=1)
 train(load_run_config(Path("configs/quickstart/pretrain.json")))
@@ -163,6 +183,18 @@ result = generate_text(
     return_logprobs=True,
 )
 text = result.text
+chat = generate_chat(
+    checkpoint=Path("runs/quickstart/sft/checkpoints/latest.pt"),
+    tokenizer_path=Path("runs/tokenizer"),
+    messages=[{"role": "user", "content": "What does Anila train?"}],
+)
+assistant_text = chat.assistant.content
+tool_chat = generate_tool_chat(
+    checkpoint=Path("runs/quickstart/sft/checkpoints/latest.pt"),
+    tokenizer_path=Path("runs/tokenizer"),
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+    tool_handlers={"calculate_math": lambda args: {"result": "4"}},
+)
 ```
 
 Lower-level modules remain importable when extending objectives, data adapters, or model internals. Checkpoint artifact reads in library code should go through Anila's checkpoint helpers rather than ad hoc `torch.load` calls.
@@ -192,10 +224,11 @@ src/anila/
   config.py        typed JSON/TOML config loading and validation
   tokenization.py  byte-level BPE tokenizer training/loading
   data.py          tokenized text datasets and dataloaders
+  chat.py          native chat prompt rendering and output parsing
   distillation.py  teacher loading and masked distillation losses
   dpo.py           DPO preference optimization
-  grpo.py          GRPO reward utilities and loss
-  model.py         native PyTorch GPT model
+  grpo.py          GRPO reward utilities and GRPO/CISPO losses
+  model.py         native PyTorch GPT model and optional routed MoE
   peft.py          LoRA adapter injection and extraction
   ppo.py           PPO value head and loss utilities
   reward.py        reward model and reward scorer adapters
@@ -214,7 +247,7 @@ tests/             fast unit and integration tests
 
 Run configs live under `configs/` and contain these top-level sections:
 
-- `model`: vocabulary-independent architecture settings.
+- `model`: vocabulary-independent architecture settings, including optional RoPE scaling and routed MoE feed-forward settings.
 - `train`: objective, dataset, tokenizer, runtime, optimizer, evaluation, and checkpoint settings.
 - `data`: pretraining data mode and sequence-window controls.
 - `lora`: optional adapter configuration.
@@ -226,7 +259,20 @@ Run configs live under `configs/` and contain these top-level sections:
 - `reward`: optional reward scorer and reward-model data settings.
 - `sft`: supervised fine-tuning record formatting settings.
 
-See `configs/quickstart/pretrain.json` for pretraining, `configs/quickstart/sft.json` for full-model supervised fine-tuning, `configs/quickstart/lora-sft.json` for LoRA SFT, `configs/quickstart/distill-hard-sft.json` for hard distillation, `configs/quickstart/distill-soft-pretrain.json` for soft-logit distillation, `configs/quickstart/opd.json` for on-policy distillation, `configs/quickstart/dpo.json` for DPO, `configs/quickstart/reward-model.json` for reward model training, `configs/quickstart/grpo-rule-reward.json` and `configs/quickstart/ppo-rule-reward.json` for rule-reward RL, and `configs/quickstart/grpo-learned-reward.json` plus `configs/quickstart/ppo-learned-reward.json` for learned-reward RL.
+See `configs/quickstart/pretrain.json` for dense pretraining, `configs/quickstart/pretrain-moe.json` for optional routed-MoE pretraining, `configs/quickstart/sft.json` for full-model supervised fine-tuning, `configs/quickstart/lora-sft.json` for LoRA SFT, `configs/quickstart/distill-hard-sft.json` for hard distillation, `configs/quickstart/distill-soft-pretrain.json` for soft-logit distillation, `configs/quickstart/opd.json` for on-policy distillation, `configs/quickstart/dpo.json` for DPO, `configs/quickstart/reward-model.json` for reward model training, `configs/quickstart/grpo-rule-reward.json` and `configs/quickstart/ppo-rule-reward.json` for rule-reward RL, and `configs/quickstart/grpo-learned-reward.json` plus `configs/quickstart/ppo-learned-reward.json` for learned-reward RL.
+
+Useful model options:
+
+- `rope_base`: rotary embedding base frequency. The default dense path uses ordinary RoPE.
+- `rope_scaling`: set to `"yarn"` to enable native YaRN-style frequency interpolation for longer configured context windows.
+- `rope_scaling_factor`: context extension factor used by YaRN scaling. It must be greater than `1` when scaling is enabled.
+- `rope_original_context_length`: original context length used as the YaRN interpolation anchor. It must be smaller than `model.context_length`.
+- `rope_yarn_beta_fast`, `rope_yarn_beta_slow`, `rope_yarn_attention_factor`: optional YaRN correction and attention-scale controls.
+- `moe_num_experts`: set to `0` for the default dense SwiGLU feed-forward path, or at least `2` to enable routed experts.
+- `moe_top_k`: number of experts selected per token when MoE is enabled.
+- `moe_intermediate_size`: optional expert hidden size override. When omitted, experts use the same rounded SwiGLU hidden size as dense blocks.
+- `moe_normalize_top_k`: normalizes selected router probabilities before combining expert outputs.
+- `moe_aux_loss_coef`: weighted load-balancing loss coefficient. The auxiliary loss is added to native training objectives that route tokens through the MoE policy or reward backbone.
 
 Useful runtime flags in `train`:
 
@@ -237,6 +283,8 @@ Useful runtime flags in `train`:
 - `ema_decay`: when set to a value in `(0, 1)`, maintains exponential moving average weights for validation, checkpointing, and optional inference/evaluation.
 
 Generation uses a native KV cache by default, so sampling only evaluates the newest token after the initial prefill. Pass `use_cache=False` to `AnilaLM.generate` when comparing against the plain full-context path. The native generation path also supports greedy decoding, seeded sampling, top-k, top-p, min-p, repetition penalty, streaming single-path steps, and deterministic beam search through `num_beams`. In batched single-path generation, rows that emit `eos_id` remain terminal while unfinished rows continue. The sampling API layers text-level stop strings, structured generation metadata, optional token logprobs, EMA checkpoint selection through `use_ema=True` or CLI `--ema`, and `stream_text` on top of the native model loop without changing the default `sample_text` string return.
+
+`render_chat_prompt`, `parse_assistant_message`, `generate_chat`, `generate_tool_chat`, and `anila model chat` provide a local chat layer over the same tokenizer and sampling path. They use Anila's native `System:`, `User:`, `Assistant:`, `<think>`, `<tool_call>`, and `<tool_response>` tags and return parsed reasoning/tool-call metadata. `generate_tool_chat` can execute caller-supplied Python callbacks and append their JSON results as tool messages for another generation round, bounded by both tool rounds and per-turn tool-call count. The CLI still does not execute external tools, and this is not an OpenAI-compatible server.
 
 ## Data Modes
 
@@ -274,7 +322,7 @@ Use `streaming` when the corpus is too large to hold as one token tensor:
 - `opd`: on-policy distillation objective. Reads prompt JSONL records, samples responses from the current student policy, and matches a teacher checkpoint's token distributions on those student-generated trajectories.
 - `dpo`: preference optimization objective. Reads JSONL prompt/chosen/rejected records, scores chosen and rejected response tokens under policy and reference models, and applies DPO loss.
 - `reward_model`: trains a scalar reward model from prompt/chosen/rejected preference records with a pairwise Bradley-Terry loss.
-- `grpo`: online policy optimization objective. Reads JSONL prompt records, samples a group of responses per prompt, scores them with a rule or learned reward scorer, normalizes rewards within each prompt group, and applies clipped GRPO loss with reference KL.
+- `grpo`: online policy optimization objective. Reads JSONL prompt records, samples a group of responses per prompt, scores them with a rule or learned reward scorer, normalizes rewards within each prompt group, and applies clipped GRPO or CISPO loss with reference KL.
 - `ppo`: online policy optimization objective. Reads JSONL prompt records, samples responses, applies reward scorer outputs plus reference KL penalties, computes GAE with a learned value head, and applies clipped PPO policy/value losses.
 
 SFT records may use either prompt/response fields:
@@ -287,6 +335,12 @@ or chat messages:
 
 ```json
 {"messages": [{"role": "user", "content": "What is SFT?"}, {"role": "assistant", "content": "Supervised fine-tuning."}]}
+```
+
+Chat records may also include assistant `reasoning_content`, assistant `tool_calls`, and `tool` role responses. Assistant reasoning and tool-call spans are trainable. Tool responses are formatted as context and masked out of the loss:
+
+```json
+{"messages": [{"role": "user", "content": "Use the calculator."}, {"role": "assistant", "content": "", "reasoning_content": "Need a tool.", "tool_calls": [{"name": "calculate_math", "arguments": {"expression": "2+2"}}]}, {"role": "tool", "content": "{\"result\":\"4\"}"}, {"role": "assistant", "content": "The answer is 4."}]}
 ```
 
 ## Evaluation
@@ -330,7 +384,7 @@ uv run anila model benchmark \
   --max-batches 1
 ```
 
-Benchmark suite files are strict JSON/TOML objects with a `tasks` list. Each task names a local dataset, a task type (`lm`, `preference`, or `reward`), and optional `batch_size` or `max_batches` overrides. The suite runner reports per-task metrics plus a compact summary, without depending on a heavy external benchmark harness.
+Benchmark suite files are strict JSON/TOML objects with a `tasks` list. Each task names a local dataset, a task type (`lm`, `preference`, `reward`, or `tool_call`), and optional `batch_size` or `max_batches` overrides. `tool_call` tasks use native chat generation and may set small generation fields such as `max_new_tokens` and `do_sample`. The suite runner reports per-task metrics plus a compact summary, without depending on a heavy external benchmark harness.
 
 ## LoRA
 
@@ -492,10 +546,22 @@ GRPO expects a policy initialized from a checkpoint and a frozen reference model
 }
 ```
 
+Set `grpo.loss_type` to `"cispo"` to use the CISPO loss variant. It keeps GRPO's group sampling, reward normalization, and reference KL path, but uses a detached upper-clipped ratio as the policy weight so the gradient still flows through the current policy log-probability when the ratio is capped. `grpo.cispo_ratio_cap` controls that upper cap.
+
 Prompt reward records use:
 
 ```json
 {"prompt": "What does Anila train?", "expected": "language models"}
+```
+
+Set `grpo.reward_type` or `ppo.reward_type` to `"tool_call"` to score native `<tool_call>` output structure, expected tool names, final answer targets, reasoning tag shape, and repetition. Tool-call reward records may use the same chat/tool prompt rendering as local chat inference:
+
+```json
+{
+  "messages": [{"role": "user", "content": "Use the calculator."}],
+  "tools": [{"type": "function", "function": {"name": "calculate_math"}}],
+  "expected": {"answers": ["4"], "tools": ["calculate_math"]}
+}
 ```
 
 When `reward.scorer` is `model`, prompt records may omit `expected` because the loaded reward model scores generated responses directly.

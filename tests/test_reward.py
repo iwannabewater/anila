@@ -1,10 +1,11 @@
+import json
 from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 import torch
 
-from anila.config import LoRAConfig, ModelConfig, RewardConfig
+from anila.config import LoRAConfig, ModelConfig, RewardConfig, SFTConfig
 from anila.data import IGNORE_INDEX
 from anila.model import AnilaLM
 from anila.reward import (
@@ -40,6 +41,30 @@ def test_reward_model_loss_prefers_chosen_over_rejected() -> None:
     assert high.accuracy.item() == pytest.approx(1.0)
 
 
+def test_reward_model_forwards_moe_aux_loss() -> None:
+    cfg = ModelConfig(
+        vocab_size=64,
+        context_length=16,
+        n_layer=1,
+        n_head=4,
+        n_kv_head=2,
+        n_embd=32,
+        moe_num_experts=4,
+        moe_top_k=2,
+        moe_aux_loss_coef=0.05,
+    ).validated()
+    model = RewardModel(AnilaLM(cfg))
+    model.train()
+    input_ids = torch.randint(0, cfg.vocab_size, (2, 8))
+    labels = torch.full_like(input_ids, IGNORE_INDEX)
+    labels[:, 4:] = input_ids[:, 4:]
+
+    out = model(input_ids, labels)
+
+    assert out.aux_loss is not None
+    assert out.aux_loss.item() > 0
+
+
 def test_rule_reward_scorer_requires_expected_targets() -> None:
     scorer = RuleRewardScorer("contains")
 
@@ -53,6 +78,30 @@ def test_rule_reward_scorer_requires_expected_targets() -> None:
     assert rewards.tolist() == [1.0]
     with pytest.raises(ValueError, match="expected target"):
         scorer.score(torch.empty(0), torch.empty(0), responses=["anything"], targets=[None])
+
+
+def test_rule_reward_scorer_supports_tool_call_targets() -> None:
+    scorer = RuleRewardScorer("tool_call")
+    target = json.dumps({"answers": ["4"], "tools": ["calculate_math"]})
+    response = '<tool_call>{"name":"calculate_math","arguments":{"expression":"2+2"}}</tool_call>\n4'
+
+    rewards = scorer.score(torch.empty(0), torch.empty(0), responses=[response], targets=[target])
+
+    assert rewards.shape == (1,)
+    assert rewards.item() > 0.0
+
+
+def test_rule_reward_scorer_uses_custom_sft_tool_tags() -> None:
+    scorer = RuleRewardScorer(
+        "tool_call",
+        sft_config=SFTConfig(tool_call_start="<call>", tool_call_end="</call>").validated(),
+    )
+    target = json.dumps({"answers": ["4"], "tools": ["calculate_math"]})
+    response = '<call>{"name":"calculate_math","arguments":{"expression":"2+2"}}</call>\n4'
+
+    rewards = scorer.score(torch.empty(0), torch.empty(0), responses=[response], targets=[target])
+
+    assert rewards.item() > 0.0
 
 
 def test_learned_reward_scorer_loads_native_reward_checkpoint(tmp_path: Path) -> None:

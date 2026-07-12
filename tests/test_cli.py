@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -11,16 +12,24 @@ import anila
 from anila import (
     evaluate_benchmark_suite,
     export_safetensors_checkpoint,
+    generate_chat,
     generate_text,
+    generate_tool_chat,
+    parse_assistant_message,
+    render_chat_prompt,
     sample_text,
     stream_text,
     train,
     train_byte_bpe,
 )
 from anila.benchmark import evaluate_benchmark_suite as module_evaluate_benchmark_suite
+from anila.chat import parse_assistant_message as module_parse_assistant_message
+from anila.chat import render_chat_prompt as module_render_chat_prompt
 from anila.checkpoint import export_safetensors_checkpoint as module_export_safetensors_checkpoint
 from anila.cli import app
+from anila.sampling import generate_chat as module_generate_chat
 from anila.sampling import generate_text as module_generate_text
+from anila.sampling import generate_tool_chat as module_generate_tool_chat
 from anila.sampling import sample_text as module_sample_text
 from anila.sampling import stream_text as module_stream_text
 from anila.tokenization import train_byte_bpe as module_train_byte_bpe
@@ -64,6 +73,36 @@ def test_cli_help_lists_resource_groups_and_version() -> None:
     assert "checkpoint" in output
 
 
+def test_cli_tokenizer_train_adds_chat_special_tokens(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("<think>\nUse tools.\n</think>\n<tool_response>{}</tool_response>\n", encoding="utf-8")
+    out = tmp_path / "tokenizer"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "tokenizer",
+            "train",
+            "--input",
+            str(corpus),
+            "--out",
+            str(out),
+            "--vocab-size",
+            "300",
+            "--min-frequency",
+            "1",
+            "--chat-special-tokens",
+            "--special-token",
+            "<custom>",
+        ],
+    )
+    metadata = json.loads((out / "tokenizer_config.json").read_text(encoding="utf-8"))
+
+    assert result.exit_code == 0
+    assert "<tool_call>" in metadata["special_tokens"]
+    assert "<custom>" in metadata["special_tokens"]
+
+
 def test_cli_generate_logprobs_requires_json(tmp_path) -> None:
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"not a real checkpoint")
@@ -94,7 +133,11 @@ def test_top_level_api_exports_common_entrypoints() -> None:
     assert anila.__version__ == package_version("anila")
     assert evaluate_benchmark_suite is module_evaluate_benchmark_suite
     assert export_safetensors_checkpoint is module_export_safetensors_checkpoint
+    assert generate_chat is module_generate_chat
     assert generate_text is module_generate_text
+    assert generate_tool_chat is module_generate_tool_chat
+    assert parse_assistant_message is module_parse_assistant_message
+    assert render_chat_prompt is module_render_chat_prompt
     assert sample_text is module_sample_text
     assert stream_text is module_stream_text
     assert train is module_train
